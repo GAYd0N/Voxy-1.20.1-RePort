@@ -21,6 +21,7 @@ import java.util.WeakHashMap;
 
 public class WorldConversionFactory {
     private static final boolean LITHIUM_INSTALLED = FabricLoader.getInstance().isModLoaded("lithium");
+    private static final boolean CANARY_INSTALLED = FabricLoader.getInstance().isModLoaded("canary");
 
     private static final class Cache {
         private final int[] biomeCache = new int[4*4*4];
@@ -42,6 +43,28 @@ public class WorldConversionFactory {
 
     private static boolean setupLithiumLocalPallet(Palette<BlockState> vp, Reference2IntOpenHashMap<BlockState> blockCache, Mapper mapper, int[] pc)  {
         if (vp instanceof LithiumHashPalette<BlockState>) {
+            for (int i = 0; i < vp.getSize(); i++) {
+                BlockState state = null;
+                int blockId = -1;
+                try { state = vp.valueFor(i); } catch (Exception e) {}
+                if (state != null) {
+                    blockId = blockCache.getOrDefault(state, -1);
+                    if (blockId == -1) {
+                        blockId = mapper.getIdForBlockState(state);
+                        blockCache.put(state, blockId);
+                    }
+                }
+                pc[i] = blockId;
+            }
+            return true;
+        }
+        return false;
+    }
+
+    // 支持Canary MOD
+    private static boolean setupCanaryLocalPallet(Palette<BlockState> vp, Reference2IntOpenHashMap<BlockState> blockCache, Mapper mapper, int[] pc) {
+        String className = vp.getClass().getName();
+        if (className.contains("canary") && className.contains("HashPalette")) {
             for (int i = 0; i < vp.getSize(); i++) {
                 BlockState state = null;
                 int blockId = -1;
@@ -103,8 +126,17 @@ public class WorldConversionFactory {
             }
             pc[0] = blockId;
         } else {
-            if (!(LITHIUM_INSTALLED && setupLithiumLocalPallet(vp, blockCache, mapper, pc))) {
-                throw new IllegalStateException("Unknown palette type: " + vp);
+            // 尝试Lithium调色板
+            boolean handled = LITHIUM_INSTALLED && setupLithiumLocalPallet(vp, blockCache, mapper, pc);
+            if (!handled) {
+                handled = CANARY_INSTALLED && setupCanaryLocalPallet(vp, blockCache, mapper, pc);
+            }
+            if (!handled) {
+                handled = setupCanaryLocalPallet(vp, blockCache, mapper, pc);
+            }
+            // 实在处理不了算了喵
+            if (!handled) {
+                throw new IllegalStateException("Unknown palette type: " + vp + " (class: " + vp.getClass().getName() + ")");
             }
         }
     }

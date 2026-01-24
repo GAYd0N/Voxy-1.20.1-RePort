@@ -1,6 +1,10 @@
 name: manual-artifact
 
 on: [ workflow_dispatch ]
+
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -21,6 +25,12 @@ jobs:
           cache-read-only: false
           cache-cleanup: always
 
+      - name: Read Properties
+        id: properties
+        run: |
+          VERSION=$(grep '^mod_version' gradle.properties | cut -d'=' -f2 | tr -d ' ' | tr -d '\r')
+          echo "VERSION=$VERSION" >> $GITHUB_ENV
+
       - name: Gradle build
         run: ./gradlew build
 
@@ -29,3 +39,13 @@ jobs:
         with:
           name: voxy-artifacts
           path: build/libs/*.jar
+
+      - name: Upload to Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ env.VERSION }}-build.${{ github.run_number }}
+          name: "Build v${{ env.VERSION }} (#${{ github.run_number }})"
+          prerelease: true
+          files: build/libs/*.jar
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
