@@ -327,12 +327,14 @@ public class WorldImporter implements IDataImporter {
 
     private void importRegion(MemoryBuffer regionFile, int x, int z) {
         //Find and load all saved chunks
-        if (regionFile.size < 8192) {//File not big enough
+        final long fileSize = regionFile.size;
+        final long baseAddress = regionFile.address;
+        if (fileSize < 8192) {//File not big enough
             Logger.warn("Header of region file invalid");
             return;
         }
         for (int idx = 0; idx < 1024; idx++) {
-            int sectorMeta = Integer.reverseBytes(MemoryUtil.memGetInt(regionFile.address+idx*4));//Assumes little endian
+            int sectorMeta = Integer.reverseBytes(MemoryUtil.memGetInt(baseAddress + idx * 4L));//Assumes little endian
             if (sectorMeta == 0) {
                 //Empty chunk
                 continue;
@@ -345,13 +347,14 @@ public class WorldImporter implements IDataImporter {
             }
 
             //TODO: create memory copy for each section
-            if (regionFile.size < ((sectorCount-1) + sectorStart) * 4096L) {
-                Logger.warn("Cannot access chunk sector as it goes out of bounds. start bytes: " + (sectorStart*4096) + " sector count: " + sectorCount + " fileSize: " + regionFile.size);
+            long sectorEnd = (sectorStart + (long) sectorCount) * 4096L;
+            if (fileSize < sectorEnd) {
+                Logger.warn("Cannot access chunk sector as it goes out of bounds. start bytes: " + (sectorStart*4096L) + " sector count: " + sectorCount + " fileSize: " + fileSize);
                 continue;
             }
 
             {
-                long base = regionFile.address + sectorStart * 4096L;
+                long base = baseAddress + sectorStart * 4096L;
                 int chunkLen = sectorCount * 4096;
                 int m = Integer.reverseBytes(MemoryUtil.memGetInt(base));
                 byte b = MemoryUtil.memGetByte(base + 4L);
@@ -359,7 +362,7 @@ public class WorldImporter implements IDataImporter {
                     Logger.error("Chunk is allocated, but stream is missing");
                 } else {
                     int n = m - 1;
-                    if (regionFile.size < (n + sectorStart*4096L)) {
+                    if (fileSize < (n + sectorStart*4096L)) {
                         Logger.warn("Chunk stream to small");
                     } else if ((b & 128) != 0) {
                         if (n != 0) {
@@ -445,7 +448,7 @@ public class WorldImporter implements IDataImporter {
 
         //Dont process non full chunk sections
         var status = ChunkStatus.byName(chunk.getString("Status"));
-        if (status != ChunkStatus.FULL && status != ChunkStatus.EMPTY) {//We also import empty since they are from data upgrade
+        if (status == null || (status != ChunkStatus.FULL && status != ChunkStatus.EMPTY)) {//We also import empty since they are from data upgrade
             this.totalChunks.decrementAndGet();
             return;
         }
@@ -494,11 +497,11 @@ public class WorldImporter implements IDataImporter {
         }
 
         var blockStatesRes = blockStateCodec.parse(NbtOps.INSTANCE, section.getCompound("block_states"));
-        blockStatesRes.get().ifRight(partial -> {
+        var blockStates = blockStatesRes.resultOrPartial(Logger::error).orElse(null);
+        if (blockStates == null) {
             //TODO: if its only partial, it means should try to upgrade the nbt format with datafixerupper probably
             return;
-        });
-        var blockStates = blockStatesRes.getOrThrow(false, Logger::error);
+        }
         var biomes = this.defaultBiomeProvider;
         var optBiomes = section.getCompound("biomes");
         if (!optBiomes.isEmpty()) {

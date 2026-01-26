@@ -387,6 +387,9 @@ public class IrisVoxyRenderPipelineData {
         if (Arrays.asList(patch.getUniformList()).contains("isPaleGarden") && !seenUniforms.contains("isPaleGarden")) {
             uniformBuilder.uniform1i("isPaleGarden", () -> 0, null);
         }
+        if (Arrays.asList(patch.getUniformList()).contains("endFlashIntensity") && !seenUniforms.contains("endFlashIntensity")) {
+            uniformBuilder.uniform1f("endFlashIntensity", () -> 0.0f, null);
+        }
         cu.assignTo(uniformBuilder);
         cu.mapholderToPass(uniformBuilder, patch);
 
