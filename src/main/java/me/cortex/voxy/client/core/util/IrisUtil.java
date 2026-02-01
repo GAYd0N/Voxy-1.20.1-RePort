@@ -2,12 +2,15 @@ package me.cortex.voxy.client.core.util;
 
 import me.cortex.voxy.client.core.VoxyRenderSystem;
 import me.cortex.voxy.client.core.rendering.Viewport;
+import me.cortex.voxy.client.iris.IGetIrisVoxyPipelineData;
 import me.jellysquid.mods.sodium.client.render.chunk.ChunkRenderMatrices;
 import net.fabricmc.loader.api.FabricLoader;
 import net.irisshaders.iris.Iris;
 import net.irisshaders.iris.api.v0.IrisApi;
 import net.irisshaders.iris.gl.IrisRenderSystem;
 import net.irisshaders.iris.shadows.ShadowRenderer;
+
+import java.io.IOException;
 
 public class IrisUtil {
     public record CapturedViewportParameters(ChunkRenderMatrices matrices, double x, double y, double z) {
@@ -32,6 +35,36 @@ public class IrisUtil {
 
     public static void clearIrisSamplers() {
         if (IRIS_INSTALLED) clearIrisSamplers0();
+    }
+
+    public static void reload() {
+        if (IRIS_INSTALLED) reload0();
+    }
+
+    public static void voxypipelinepatch() {
+        if (!IRIS_INSTALLED) {
+            return;
+        }
+        if (!irisShaderPackEnabled0()) {
+            return;
+        }
+        var pipeline = Iris.getPipelineManager().getPipelineNullable();
+        if (pipeline instanceof IGetIrisVoxyPipelineData getData) {
+            if (getData.voxy$getPipelineData() != null) {
+                return;
+            }
+        }
+        reload0();
+    }
+
+    private static void reload0() {
+        try {
+            if (IrisApi.getInstance().isShaderPackInUse()) {
+                Iris.reload();
+            }
+        } catch (IOException e) {
+            throw new RuntimeException(e);
+        }
     }
 
     private static void clearIrisSamplers0() {

@@ -35,30 +35,23 @@ public class VoxyConfig implements OptionStorage<VoxyConfig> {
     public boolean dontUseSodiumBuilderThreads = false;
 
     private static VoxyConfig loadOrCreate() {
-        if (VoxyCommon.isAvailable()) {
-            var path = getConfigPath();
-            if (Files.exists(path)) {
-                try (FileReader reader = new FileReader(path.toFile())) {
-                    var conf = GSON.fromJson(reader, VoxyConfig.class);
-                    if (conf != null) {
-                        conf.save();
-                        return conf;
-                    } else {
-                        Logger.error("Failed to load voxy config, resetting");
-                    }
-                } catch (IOException e) {
-                    Logger.error("Could not parse config", e);
+        var path = getConfigPath();
+        if (Files.exists(path)) {
+            try (FileReader reader = new FileReader(path.toFile())) {
+                var conf = GSON.fromJson(reader, VoxyConfig.class);
+                if (conf != null) {
+                    conf.save();
+                    return conf;
+                } else {
+                    Logger.error("无法读取Voxy配置文件，进行初始化。Failed to load voxy config, resetting");
                 }
+            } catch (IOException e) {
+                Logger.error("无法解析Voxy配置文件。Could not parse config", e);
             }
-            var config = new VoxyConfig();
-            config.save();
-            return config;
-        } else {
-            var config = new VoxyConfig();
-            config.enabled = false;
-            config.enableRendering = false;
-            return config;
         }
+        var config = new VoxyConfig();
+        config.save();
+        return config;
     }
 
     public void save() {
