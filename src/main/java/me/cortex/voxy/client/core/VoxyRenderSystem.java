@@ -269,6 +269,8 @@ public class VoxyRenderSystem {
             //Tick upload stream (this is ok to do here as upload ticking is just memory management)
             UploadStream.INSTANCE.tick();
 
+            this.renderGen.setCenter((int)viewport.cameraX, (int)viewport.cameraZ);
+
             while (this.renderDistanceTracker.setCenterAndProcess(viewport.cameraX, viewport.cameraZ) && VoxyClient.isFrexActive());//While FF is active, run until everything is processed
             TimingStatistics.I.start();
             //Done here as is allows less gl state resetup
