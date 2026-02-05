@@ -36,6 +36,19 @@ public class GlFence extends TrackedObject {
         return this.signaled;
     }
 
+    public void waitSignaled() {
+        while (!this.signaled()) {
+            int ret = glClientWaitSync(this.fence, GL_SYNC_FLUSH_COMMANDS_BIT, 1_000_000L);
+            if (ret == GL_ALREADY_SIGNALED || ret == GL_CONDITION_SATISFIED) {
+                this.signaled = true;
+                return;
+            }
+            if (ret != GL_TIMEOUT_EXPIRED) {
+                throw new IllegalStateException("Wait for fence failed, glError: " + glGetError());
+            }
+        }
+    }
+
     @Override
     public void free() {
         super.free0();
