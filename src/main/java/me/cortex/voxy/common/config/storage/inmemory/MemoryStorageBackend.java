@@ -52,6 +52,9 @@ public class MemoryStorageBackend extends StorageBackend {
         synchronized (map) {
             var data = map.get(key);
             if (data != null) {
+                if (data.size > scratch.size) {
+                    throw new IllegalArgumentException("Scratch buffer too small, requested: " + data.size + " capacity: " + scratch.size);
+                }
                 data.cpyTo(scratch.address);
                 return scratch.subSize(data.size);
             } else {
