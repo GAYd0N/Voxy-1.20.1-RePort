@@ -14,7 +14,7 @@ import java.util.Deque;
 import java.util.function.Consumer;
 
 import static me.cortex.voxy.common.util.AllocationArena.SIZE_LIMIT;
-import static org.lwjgl.opengl.GL11.glFinish;
+import static org.lwjgl.opengl.GL11.glFlush;
 import static org.lwjgl.opengl.GL30C.GL_MAP_READ_BIT;
 import static org.lwjgl.opengl.GL42.GL_BUFFER_UPDATE_BARRIER_BIT;
 import static org.lwjgl.opengl.GL42.glMemoryBarrier;
@@ -76,8 +76,11 @@ public class DownloadStream {
                 this.commit();
                 int attempts = 10;
                 while (--attempts != 0 && this.caddr == SIZE_LIMIT) {
-                    glFinish();
                     this.tick();
+                    if (!this.frames.isEmpty()) {
+                        this.frames.peek().fence.waitSignaled();
+                        this.tick();
+                    }
                     this.caddr = this.allocationArena.alloc((int) size);
                 }
                 if (this.caddr == SIZE_LIMIT) {
@@ -150,27 +153,24 @@ public class DownloadStream {
 
     //Synchonize force flushes everything
     public void waitDiscard() {
-        glFinish();
+        this.tick();
+        glFlush();
         var fence = new GlFence();
-        glFinish();
-        while (!fence.signaled())
-            Thread.onSpinWait();
+        fence.waitSignaled();
         fence.free();
         while (!this.frames.isEmpty()) {
             var frame = this.frames.pop();
-            while (!frame.fence.signaled()) Thread.onSpinWait();
+            frame.fence.waitSignaled();
             frame.allocations.forEach(this.allocationArena::free);
             frame.fence.free();
         }
     }
 
     public void flushWaitClear() {
-        glFinish();
         this.tick();
+        glFlush();
         var fence = new GlFence();
-        glFinish();
-        while (!fence.signaled())
-            Thread.onSpinWait();
+        fence.waitSignaled();
         fence.free();
         this.tick();
         if (!this.frames.isEmpty()) {
