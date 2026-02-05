@@ -193,12 +193,13 @@ public class RocksDBStorageBackend extends StorageBackend {
 
     @Override
     public Int2ObjectOpenHashMap<byte[]> getIdMappingsData() {
-        var iterator = this.db.newIterator(this.idMappings);
-        var out = new Int2ObjectOpenHashMap<byte[]>();
-        for (iterator.seekToFirst(); iterator.isValid(); iterator.next()) {
-            out.put(bytesToInt(iterator.key()), iterator.value());
+        try (var iterator = this.db.newIterator(this.idMappings)) {
+            var out = new Int2ObjectOpenHashMap<byte[]>();
+            for (iterator.seekToFirst(); iterator.isValid(); iterator.next()) {
+                out.put(bytesToInt(iterator.key()), iterator.value());
+            }
+            return out;
         }
-        return out;
     }
 
     @Override
