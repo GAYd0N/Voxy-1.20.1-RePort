@@ -1,5 +1,5 @@
 plugins {
-    id 'fabric-loom' version "1.11-SNAPSHOT"
+    id 'fabric-loom' version "1.12.7"
     id 'maven-publish'
 }
 
@@ -86,12 +86,9 @@ loom {
     }
 }
 
-def modRuntimeOnlyMsk = {arg->}
-if (!isInGHA) {
-    modRuntimeOnlyMsk = { arg ->
-        dependencies {
-            modRuntimeOnly(arg)
-        }
+def modRuntimeOnlyMsk = { arg ->
+    dependencies {
+        modRuntimeOnly(arg)
     }
 }
 
