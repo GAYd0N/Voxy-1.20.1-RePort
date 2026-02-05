@@ -145,26 +145,15 @@ public class WorldConversionFactory {
                                            Mapper stateMapper,
                                            PalettedContainer<BlockState> blockContainer,
                                            PalettedContainerRO<Holder<Biome>> biomeContainer,
-                                           ILightingSupplier lightSupplier) {
+                                           byte[] blockLight,
+                                           byte[] skyLight) {
 
         //Cheat by creating a local pallet then read the data directly
-
-
         var cache = THREAD_LOCAL.get();
         var blockCache = cache.getLocalMapping(stateMapper);
 
         var biomes = cache.biomeCache;
         var data = section.section;
-
-        var vp = blockContainer.data.palette;
-        var pc = cache.getPaletteCache(vp.getSize());
-        GlobalPalette<BlockState> bps = null;
-
-        if (blockContainer.data.palette instanceof GlobalPalette<BlockState> _bps) {
-            bps = _bps;
-        } else {
-            setupLocalPalette(vp, blockCache, stateMapper, pc);
-        }
 
         {
             int i = 0;
@@ -177,6 +166,35 @@ public class WorldConversionFactory {
             }
         }
 
+        if (blockContainer == null) {
+            for (int i = 0; i <= 0xFFF; i++) {
+                int idx = i >> 1;
+                boolean shift = (i & 1) != 0;
+                int sky = 0;
+                if (skyLight != null) {
+                    int b = skyLight[idx] & 0xFF;
+                    sky = shift ? (b >> 4) : (b & 0xF);
+                }
+                int block = 0;
+                if (blockLight != null) {
+                    int b = blockLight[idx] & 0xFF;
+                    block = shift ? (b >> 4) : (b & 0xF);
+                }
+                data[i] = Mapper.airWithLight((byte) (sky | (block << 4)));
+            }
+            section.lvl0NonAirCount = 0;
+            return section;
+        }
+
+        var vp = blockContainer.data.palette;
+        var pc = cache.getPaletteCache(vp.getSize());
+        GlobalPalette<BlockState> bps = null;
+
+        if (blockContainer.data.palette instanceof GlobalPalette<BlockState> _bps) {
+            bps = _bps;
+        } else {
+            setupLocalPalette(vp, blockCache, stateMapper, pc);
+        }
 
         int nonZeroCnt = 0;
         if (blockContainer.data.storage instanceof SimpleBitStorage bStor) {
@@ -202,7 +220,20 @@ public class WorldConversionFactory {
                 }
                 sample >>>= eBits;
 
-                byte light = lightSupplier.supply(i&0xF, (i>>8)&0xF, (i>>4)&0xF);
+                int idx = i >> 1;
+                boolean shift = (i & 1) != 0;
+                int sky = 0;
+                if (skyLight != null) {
+                    int b = skyLight[idx] & 0xFF;
+                    sky = shift ? (b >> 4) : (b & 0xF);
+                }
+                int block = 0;
+                if (blockLight != null) {
+                    int b = blockLight[idx] & 0xFF;
+                    block = shift ? (b >> 4) : (b & 0xF);
+                }
+                byte light = (byte) (sky | (block << 4));
+
                 nonZeroCnt += (bId != 0)?1:0;
                 data[i] = Mapper.composeMappingId(light, bId, biomes[Integer.compress(i,0b1100_1100_1100)]);
             }
@@ -213,12 +244,36 @@ public class WorldConversionFactory {
             int bId = pc[0];
             if (bId == 0) {//Its air
                 for (int i = 0; i <= 0xFFF; i++) {
-                    data[i] = Mapper.airWithLight(lightSupplier.supply(i&0xF, (i>>8)&0xF, (i>>4)&0xF));
+                    int idx = i >> 1;
+                    boolean shift = (i & 1) != 0;
+                    int sky = 0;
+                    if (skyLight != null) {
+                        int b = skyLight[idx] & 0xFF;
+                        sky = shift ? (b >> 4) : (b & 0xF);
+                    }
+                    int block = 0;
+                    if (blockLight != null) {
+                        int b = blockLight[idx] & 0xFF;
+                        block = shift ? (b >> 4) : (b & 0xF);
+                    }
+                    data[i] = Mapper.airWithLight((byte) (sky | (block << 4)));
                 }
             } else {
                 nonZeroCnt = 4096;
                 for (int i = 0; i <= 0xFFF; i++) {
-                    byte light = lightSupplier.supply(i&0xF, (i>>8)&0xF, (i>>4)&0xF);
+                    int idx = i >> 1;
+                    boolean shift = (i & 1) != 0;
+                    int sky = 0;
+                    if (skyLight != null) {
+                        int b = skyLight[idx] & 0xFF;
+                        sky = shift ? (b >> 4) : (b & 0xF);
+                    }
+                    int block = 0;
+                    if (blockLight != null) {
+                        int b = blockLight[idx] & 0xFF;
+                        block = shift ? (b >> 4) : (b & 0xF);
+                    }
+                    byte light = (byte) (sky | (block << 4));
                     data[i] = Mapper.composeMappingId(light, bId, biomes[Integer.compress(i,0b1100_1100_1100)]);
                 }
             }
