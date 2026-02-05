@@ -100,6 +100,9 @@ public class LMDBStorageBackend extends StorageBackend {
             if (bb == null) {
                 return null;
             }
+            if (bb.remaining() > scratch.size) {
+                throw new IllegalArgumentException("Scratch buffer too small, requested: " + bb.remaining() + " capacity: " + scratch.size);
+            }
             UnsafeUtil.memcpy(MemoryUtil.memAddress(bb), scratch.address, bb.remaining());
             return scratch.subSize(bb.remaining());
         }));
