@@ -711,9 +711,16 @@ public class ModelFactory {
     private static BlockColor getColourProvider(Block block) {
         BlockState defaultState = block.defaultBlockState();
         var blockColors = Minecraft.getInstance().getBlockColors();
-        int color = blockColors.getColor(defaultState, null, BlockPos.ZERO, 0);
-        if (color != 0) {
-            return (state, world, pos, tintIndex) -> blockColors.getColor(state, world, pos, tintIndex);
+        try {
+            int color = blockColors.getColor(defaultState, null, BlockPos.ZERO, 0);
+            if (color != 0) {
+                return (state, world, pos, tintIndex) -> {
+                    if (world == null) return color;
+                    return blockColors.getColor(state, world, pos, tintIndex);
+                };
+            }
+        } catch (Exception e) {
+            Logger.warn("Failed to get colour provider for block: " + block.getDescriptionId() + " error: " + e.getMessage());
         }
         return null;
     }
