@@ -17,6 +17,7 @@ import net.minecraft.nbt.NbtIo;
 import net.minecraft.nbt.NbtOps;
 import net.minecraft.util.datafix.DataFixers;
 import net.minecraft.util.datafix.fixes.References;
+import net.minecraft.world.level.EmptyBlockGetter;
 import net.minecraft.world.level.biome.Biome;
 import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.Blocks;
@@ -118,47 +119,29 @@ public class Mapper {
             int id = entry.getIntKey() & ((1<<30)-1);
             if (entryType == BLOCK_STATE_TYPE) {
                 var sentry = StateEntry.deserialize(id, entry.getValue(), forceResave);
-                if (sentry.state.isAir()) {
-                    Logger.error("Deserialization was air, removed block");
-                    sentryErrors.add(new Pair<>(entry.getValue(), id));
-                    continue;
-                }
                 sentries.add(sentry);
-                var oldEntry = this.block2stateEntry.putIfAbsent(sentry.state, sentry);
-                if (oldEntry != null) {
-                    //forceResave[0] |= true;
-                    Logger.warn("Multiple mappings for blockstate, using old state, expect things to possibly go really badly. " + oldEntry.id + ":" + sentry.id + ":" + sentry.state );
+                if (!sentry.state.isAir()) {
+                    var oldEntry = this.block2stateEntry.putIfAbsent(sentry.state, sentry);
+                    if (oldEntry != null) {
+                        Logger.warn("Multiple mappings for blockstate, using old state. " + oldEntry.id + ":" + sentry.id + ":" + sentry.state );
+                    }
                 }
             } else if (entryType == BIOME_TYPE) {
                 var bentry = BiomeEntry.deserialize(id, entry.getValue());
                 bentries.add(bentry);
-                if (this.biome2biomeEntry.put(bentry.biome, bentry) != null) {
-                    throw new IllegalStateException("Multiple mappings for biome entry");
+                var oldEntry = this.biome2biomeEntry.putIfAbsent(bentry.biome, bentry);
+                if (oldEntry != null) {
+                    Logger.warn("Multiple mappings for biome entry: " + bentry.biome + " ids: " + oldEntry.id + " & " + bentry.id);
                 }
             } else {
                 throw new IllegalStateException("Unknown entryType");
             }
         }
 
-        if (!sentryErrors.isEmpty()) {
-            forceResave[0] |= true;
-            //Insert garbage types into the mapping for those blocks, TODO:FIXME: Need to upgrade the type or have a solution to error blocks
-            var rand = new Random();
-            for (var error : sentryErrors) {
-                while (true) {
-                    var state = new StateEntry(error.right(), Block.BLOCK_STATE_REGISTRY.byId(rand.nextInt(Block.BLOCK_STATE_REGISTRY.size() - 1)));
-                    if (this.block2stateEntry.put(state.state, state) == null) {
-                        sentries.add(state);
-                        break;
-                    }
-                }
-            }
-        }
-
         //Insert into the arrays
         sentries.stream().sorted(Comparator.comparing(a->a.id)).forEach(entry -> {
             if (this.blockId2stateEntry.size() != entry.id) {
-                throw new IllegalStateException("Block entry not ordered");
+                throw new IllegalStateException("Block entry not ordered. Expected: " + this.blockId2stateEntry.size() + " got: " + entry.id);
             }
             this.blockId2stateEntry.add(entry);
         });
@@ -315,8 +298,8 @@ public class Mapper {
             if (entry.state.isAir() && entry.id == 0) {
                 continue;
             }
-            if (this.blockId2stateEntry.indexOf(entry) != entry.id) {
-                throw new IllegalStateException("State Id NOT THE SAME, very critically bad. arr:" + this.blockId2stateEntry.indexOf(entry) + " entry: " + entry.id);
+            if (this.blockId2stateEntry.get(entry.id) != entry) {
+                throw new IllegalStateException("State Id NOT THE SAME, very critically bad. arr id:" + this.blockId2stateEntry.get(entry.id).id + " entry id: " + entry.id);
             }
             byte[] serialized = entry.serialize();
             ByteBuffer buffer = MemoryUtil.memAlloc(serialized.length);
@@ -327,7 +310,7 @@ public class Mapper {
         }
 
         for (var entry : biomes) {
-            if (this.biomeId2biomeEntry.indexOf(entry) != entry.id) {
+            if (this.biomeId2biomeEntry.get(entry.id) != entry) {
                 throw new IllegalStateException("Biome Id NOT THE SAME, very critically bad");
             }
 
@@ -358,7 +341,11 @@ public class Mapper {
             if (state.getBlock() instanceof LeavesBlock) {
                 this.opacity = 15;
             } else {
-                this.opacity = state.getLightBlock(Minecraft.getInstance().level, new BlockPos(0,0,0));
+                if (Minecraft.getInstance().level != null) {
+                    this.opacity = state.getLightBlock(Minecraft.getInstance().level, BlockPos.ZERO);
+                } else {
+                    this.opacity = state.isSolidRender(EmptyBlockGetter.INSTANCE, BlockPos.ZERO) ? 15 : 0;
+                }
             }
         }
 
