@@ -3,7 +3,6 @@ package me.cortex.voxy.common.world.service;
 import me.cortex.voxy.common.Logger;
 import me.cortex.voxy.common.thread.Service;
 import me.cortex.voxy.common.thread.ServiceManager;
-import me.cortex.voxy.common.voxelization.ILightingSupplier;
 import me.cortex.voxy.common.voxelization.VoxelizedSection;
 import me.cortex.voxy.common.voxelization.WorldConversionFactory;
 import me.cortex.voxy.common.world.WorldEngine;
@@ -24,11 +23,24 @@ import net.minecraft.world.level.lighting.LayerLightSectionStorage;
 import org.jetbrains.annotations.NotNull;
 
 import java.util.concurrent.ConcurrentLinkedDeque;
+import java.util.concurrent.ConcurrentLinkedQueue;
 
 public class VoxelIngestService {
+    private static final ConcurrentLinkedQueue<byte[]> LIGHT_DATA_POOL = new ConcurrentLinkedQueue<>();
+    private static byte[] acquireLightData(byte[] source) {
+        if (source == null) return null;
+        byte[] data = LIGHT_DATA_POOL.poll();
+        if (data == null) data = new byte[2048];
+        System.arraycopy(source, 0, data, 0, 2048);
+        return data;
+    }
+    private static void releaseLightData(byte[] data) {
+        if (data != null) LIGHT_DATA_POOL.add(data);
+    }
+
     private static final ThreadLocal<VoxelizedSection> SECTION_CACHE = ThreadLocal.withInitial(VoxelizedSection::createEmpty);
     private final Service service;
-    private record IngestSection(int cx, int cy, int cz, WorldEngine world, PalettedContainer<BlockState> states, PalettedContainerRO<Holder<Biome>> biomes, boolean onlyAir, DataLayer blockLight, DataLayer skyLight){}
+    private record IngestSection(int cx, int cy, int cz, WorldEngine world, PalettedContainer<BlockState> states, PalettedContainerRO<Holder<Biome>> biomes, boolean onlyAir, byte[] blockLight, byte[] skyLight){}
     private final ConcurrentLinkedDeque<IngestSection> ingestQueue = new ConcurrentLinkedDeque<>();
 
     public VoxelIngestService(ServiceManager pool) {
@@ -41,7 +53,7 @@ public class VoxelIngestService {
 
         var vs = SECTION_CACHE.get().setPosition(task.cx, task.cy, task.cz);
 
-        if (task.onlyAir && task.blockLight==null && task.skyLight==null) {
+        if (task.onlyAir && task.blockLight == null && task.skyLight == null) {
             WorldUpdater.insertUpdate(task.world, vs.zero());
         } else {
             VoxelizedSection csec = WorldConversionFactory.convert(
@@ -49,53 +61,26 @@ public class VoxelIngestService {
                     task.world.getMapper(),
                     task.states,
                     task.biomes,
-                    getLightingSupplier(task)
+                    task.blockLight,
+                    task.skyLight
             );
             WorldConversionFactory.mipSection(csec, task.world.getMapper());
             WorldUpdater.insertUpdate(task.world, csec);
         }
+        releaseLightData(task.blockLight);
+        releaseLightData(task.skyLight);
     }
 
-    private static IngestSection snapshotSection(int cx, int cy, int cz, WorldEngine world, LevelChunkSection section, DataLayer blockLight, DataLayer skyLight) {
-        PalettedContainer<BlockState> states = section.getStates().copy();
+    private static IngestSection snapshotSection(int cx, int cy, int cz, WorldEngine world, LevelChunkSection section, byte[] blockLight, byte[] skyLight) {
+        boolean onlyAir = section.hasOnlyAir();
+        PalettedContainer<BlockState> states = onlyAir ? null : section.getStates().copy();
         PalettedContainerRO<Holder<Biome>> biomes = section.getBiomes();
         if (biomes instanceof PalettedContainer<Holder<Biome>> container) {
             biomes = container.copy();
         } else {
             biomes = biomes.recreate();
         }
-        return new IngestSection(cx, cy, cz, world, states, biomes, section.hasOnlyAir(), blockLight, skyLight);
-    }
-
-    @NotNull
-    private static ILightingSupplier getLightingSupplier(IngestSection task) {
-        ILightingSupplier supplier = (x,y,z) -> (byte) 0;
-        var sla = task.skyLight;
-        var bla = task.blockLight;
-        boolean sl = sla != null && !sla.isEmpty();
-        boolean bl = bla != null && !bla.isEmpty();
-        if (sl || bl) {
-            if (sl && bl) {
-                supplier = (x,y,z)-> {
-                    int block = Math.min(15,bla.get(x, y, z));
-                    int sky = Math.min(15,sla.get(x, y, z));
-                    return (byte) (sky|(block<<4));
-                };
-            } else if (bl) {
-                supplier = (x,y,z)-> {
-                    int block = Math.min(15,bla.get(x, y, z));
-                    int sky = 0;
-                    return (byte) (sky|(block<<4));
-                };
-            } else {
-                supplier = (x,y,z)-> {
-                    int block = 0;
-                    int sky = Math.min(15,sla.get(x, y, z));
-                    return (byte) (sky|(block<<4));
-                };
-            }
-        }
-        return supplier;
+        return new IngestSection(cx, cy, cz, world, states, biomes, onlyAir, blockLight, skyLight);
     }
 
     private static boolean shouldIngestSection(LevelChunkSection section, int cx, int cy, int cz) {
@@ -130,19 +115,22 @@ public class VoxelIngestService {
 
         if (allEmpty&&!gotLighting) {
             //Special case all empty chunk columns, we need to clear it out
-            i = chunk.getMinSection() - 1;
-            for (var section : chunk.getSections()) {
-                i++;
-                if (section == null || !shouldIngestSection(section, chunk.getPos().x, i, chunk.getPos().z)) continue;
-                this.ingestQueue.add(snapshotSection(chunk.getPos().x, i, chunk.getPos().z, engine, section, null, null));
-                try {
-                    this.service.execute();
-                } catch (Exception e) {
-                    Logger.error("Executing had an error: assume shutting down, aborting",e);
-                    break;
-                }
+            boolean added = false;
+        i = chunk.getMinSection() - 1;
+        for (var section : chunk.getSections()) {
+            i++;
+            if (section == null || !shouldIngestSection(section, chunk.getPos().x, i, chunk.getPos().z)) continue;
+            this.ingestQueue.add(snapshotSection(chunk.getPos().x, i, chunk.getPos().z, engine, section, null, null));
+            added = true;
+        }
+        if (added) {
+            try {
+                this.service.execute();
+            } catch (Exception e) {
+                Logger.error("Executing had an error: assume shutting down, aborting", e);
             }
         }
+    }
 
         if (!gotLighting) {
             return false;
@@ -152,34 +140,27 @@ public class VoxelIngestService {
         var slp = lightingProvider.getLayerListener(LightLayer.SKY);
 
 
+        boolean added = false;
         i = chunk.getMinSection() - 1;
         for (var section : chunk.getSections()) {
             i++;
             if (section == null || !shouldIngestSection(section, chunk.getPos().x, i, chunk.getPos().z)) continue;
-            //if (section.isEmpty()) continue;
             var pos = SectionPos.of(chunk.getPos(), i);
 
             var bl = blp.getDataLayerData(pos);
-            if (bl != null) {
-                bl = bl.copy();
-            }
+            byte[] blData = acquireLightData(bl != null ? bl.getData() : null);
 
             var sl = slp.getDataLayerData(pos);
-            if (sl != null) {
-                sl = sl.copy();
-            }
+            byte[] slData = acquireLightData(sl != null ? sl.getData() : null);
 
-            //If its null for either, assume failure to obtain lighting and ignore section
-            //if (blNone && slNone) {
-            //    continue;
-            //}
-
-            this.ingestQueue.add(snapshotSection(chunk.getPos().x, i, chunk.getPos().z, engine, section, bl, sl));
+            this.ingestQueue.add(snapshotSection(chunk.getPos().x, i, chunk.getPos().z, engine, section, blData, slData));
+            added = true;
+        }
+        if (added) {
             try {
                 this.service.execute();
             } catch (Exception e) {
-                Logger.error("Executing had an error: assume shutting down, aborting",e);
-                break;
+                Logger.error("Executing had an error: assume shutting down, aborting", e);
             }
         }
         return true;
@@ -209,13 +190,13 @@ public class VoxelIngestService {
         return tryIngestChunk(WorldIdentifier.of(chunk.getLevel()), chunk);
     }
 
-    private boolean rawIngest0(WorldEngine engine, LevelChunkSection section, int x, int y, int z, DataLayer bl, DataLayer sl) {
+    private boolean rawIngest0(WorldEngine engine, LevelChunkSection section, int x, int y, int z, byte[] bl, byte[] sl) {
         this.ingestQueue.add(snapshotSection(x, y, z, engine, section, bl, sl));
         try {
             this.service.execute();
             return true;
         } catch (Exception e) {
-            Logger.error("Executing had an error: assume shutting down, aborting",e);
+            Logger.error("Executing had an error: assume shutting down, aborting", e);
             return false;
         }
     }
@@ -231,6 +212,8 @@ public class VoxelIngestService {
         if (!shouldIngestSection(section, x, y, z)) return false;
         if (engine.instanceIn == null) return false;
         if (!engine.instanceIn.isIngestEnabled(null)) return false;//TODO: dont pass in null
-        return engine.instanceIn.getIngestService().rawIngest0(engine, section, x, y, z, bl, sl);
+        byte[] blData = acquireLightData(bl != null ? bl.getData() : null);
+        byte[] slData = acquireLightData(sl != null ? sl.getData() : null);
+        return engine.instanceIn.getIngestService().rawIngest0(engine, section, x, y, z, blData, slData);
     }
 }
