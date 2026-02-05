@@ -11,7 +11,7 @@ import java.util.ArrayList;
 import java.util.Deque;
 
 import static org.lwjgl.opengl.ARBMapBufferRange.GL_MAP_READ_BIT;
-import static org.lwjgl.opengl.GL11.glFinish;
+import static org.lwjgl.opengl.GL11.glFlush;
 import static org.lwjgl.opengl.GL44.GL_MAP_COHERENT_BIT;
 
 //Special download stream which allows access to the download buffer directly
@@ -35,9 +35,12 @@ public class RawDownloadStream {
         int allocation = (int) this.allocationArena.alloc(size);
         if (allocation == AllocationArena.SIZE_LIMIT) {
             Logger.warn("Raw download stream full, preemptively committing, this could cause bad things to happen");
-            //Hit the download limit, attempt to free
-            glFinish();
+            this.submit();
             this.tick();
+            if (!this.frames.isEmpty()) {
+                this.frames.peek().fence.waitSignaled();
+                this.tick();
+            }
             allocation = (int) this.allocationArena.alloc(size);
             if (allocation == AllocationArena.SIZE_LIMIT) {
                 throw new IllegalStateException("Unable free enough memory for raw download stream");
@@ -80,12 +83,10 @@ public class RawDownloadStream {
     }
 
     public void free() {
-        glFinish();
         this.tick();
+        glFlush();
         GlFence fence = new GlFence();
-        while (!fence.signaled()) {
-            glFinish();
-        }
+        fence.waitSignaled();
         fence.free();
         this.tick();
         if (this.frames.size() != 0) {
