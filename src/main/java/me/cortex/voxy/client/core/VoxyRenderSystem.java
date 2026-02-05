@@ -385,7 +385,7 @@ public class VoxyRenderSystem {
         UploadStream.INSTANCE.tick();
         //Done here as is allows less gl state resetup
         this.modelService.tick(100_000_000);
-        GL11.glFinish();
+        GL11.glFlush();
         return this.nodeManager.hasWork() || this.renderGen.getTaskCount()!=0 || !this.modelService.areQueuesEmpty();
     }
 
