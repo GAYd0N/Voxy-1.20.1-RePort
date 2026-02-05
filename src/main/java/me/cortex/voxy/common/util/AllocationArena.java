@@ -11,7 +11,7 @@ import it.unimi.dsi.fastutil.longs.LongRBTreeSet;
 public class AllocationArena {
     public static final long SIZE_LIMIT = -1;
 
-    private static final int ADDR_BITS = 34;//This gives max size per allocation of 2^30 and max address of 2^39
+    private static final int ADDR_BITS = 32;//This gives max size per allocation of 2^32 and max address of 2^32
     private static final int SIZE_BITS = 64 - ADDR_BITS;
     private static final long SIZE_MSK = (1L<<SIZE_BITS)-1;
     private static final long ADDR_MSK = (1L<<ADDR_BITS)-1;

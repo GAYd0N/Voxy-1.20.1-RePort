@@ -6,6 +6,7 @@ import org.vivecraft.api.client.VRRenderingAPI;
 
 import java.util.HashMap;
 import java.util.Map;
+import java.util.WeakHashMap;
 import java.util.function.Supplier;
 
 import static org.vivecraft.api.client.data.RenderPass.VANILLA;
@@ -15,7 +16,7 @@ public class ViewportSelector <T extends Viewport<?>> {
 
     private final Supplier<T> creator;
     private final T defaultViewport;
-    private final Map<Object, T> extraViewports = new HashMap<>();//TODO should maybe be a weak hashmap with value cleanup queue thing?
+    private final Map<Object, T> extraViewports = new WeakHashMap<>();
 
     public ViewportSelector(Supplier<T> viewportCreator) {
         this.creator = viewportCreator;

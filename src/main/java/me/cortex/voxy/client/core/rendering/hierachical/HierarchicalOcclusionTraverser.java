@@ -199,8 +199,13 @@ public class HierarchicalOcclusionTraverser {
         MemoryUtil.memPutInt(ptr, this.nodeCleaner.visibilityId); ptr += 4;
 
         {
-            final double TARGET_COUNT = 4000;//TODO: make this configurable, or at least dynamically computed based on throughput rate of mesh gen
-            double iFillness = Math.max(0, (TARGET_COUNT - this.meshGen.getTaskCount()) / TARGET_COUNT);
+            // Adaptive Load Balancer: Dynamically adjust TARGET_COUNT based on mesh generation service pressure
+            // If the mesh generation queue is full, we should slow down traversal to avoid overwhelming the system
+            // If the queue is empty, we can speed up to fill it faster
+            float servicePressure = (float) this.meshGen.getTaskCount() / (float) this.meshGen.getMaxTasks();
+            double targetCount = 4000.0 * (2.0 - Math.min(1.0, servicePressure * 1.5));
+            
+            double iFillness = Math.max(0, (targetCount - this.meshGen.getTaskCount()) / targetCount);
             iFillness = Math.pow(iFillness, 2);
             final int requestSize = (int) Math.ceil(iFillness * MAX_REQUEST_QUEUE_SIZE);
             MemoryUtil.memPutInt(ptr, Math.max(0, Math.min(MAX_REQUEST_QUEUE_SIZE, requestSize)));ptr += 4;

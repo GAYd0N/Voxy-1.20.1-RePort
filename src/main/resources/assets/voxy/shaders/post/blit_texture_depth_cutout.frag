@@ -10,6 +10,10 @@ layout(binding = 3) uniform sampler2D colourTex;
 layout(location = 4) uniform vec3 endParams;
 layout(location = 5) uniform vec3 fogColour;
 #endif
+#ifdef USE_ATMOSPHERIC_FOG
+layout(location = 6) uniform vec4 atmosphericFogParams; // x: density, y: falloff, z: start, w: unused
+layout(location = 7) uniform vec3 atmosphericFogColor;
+#endif
 #endif
 
 out vec4 colour;
@@ -46,6 +50,18 @@ void main() {
     {
         float fogLerp = clamp(fma(min(length(point.xyz), endParams.x),endParams.y,endParams.z),0,1);//512 is 32*16 which is the render distance in blocks
         colour.rgb = mix(colour.rgb, fogColour, fogLerp);
+    }
+    #endif
+
+    #ifdef USE_ATMOSPHERIC_FOG
+    {
+        float dist = length(point.xyz);
+        float density = atmosphericFogParams.x;
+        float falloff = atmosphericFogParams.y;
+        float start = atmosphericFogParams.z;
+        
+        float fogAmount = 1.0 - exp(-pow(max(0.0, dist - start) * density, falloff));
+        colour.rgb = mix(colour.rgb, atmosphericFogColor, clamp(fogAmount, 0.0, 1.0));
     }
     #endif
     #else

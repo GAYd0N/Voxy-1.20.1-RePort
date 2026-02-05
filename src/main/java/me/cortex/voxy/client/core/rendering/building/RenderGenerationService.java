@@ -27,7 +27,10 @@ public class RenderGenerationService {
 
     public static final AtomicInteger MESH_FAILED_COUNTER = new AtomicInteger();
     private static final AtomicInteger COUNTER = new AtomicInteger();
-    private static final class BuildTask {
+
+    private volatile int centerBlockX, centerBlockZ;
+
+    private final class BuildTask {
         WorldSection section;
         final long position;
         boolean hasDoneModelRequestInner;
@@ -40,11 +43,23 @@ public class RenderGenerationService {
         }
         private void updatePriority() {
             int unique = COUNTER.incrementAndGet();
-            int lvl = WorldEngine.MAX_LOD_LAYER-WorldEngine.getLevel(this.position);
+            int level = WorldEngine.getLevel(this.position);
+            int lvl = WorldEngine.MAX_LOD_LAYER - level;
             lvl = Math.min(lvl, 3);//Make the 2 highest quality have equal priority
-            this.priority = (((lvl*3L + Math.min(this.attempts, 3))*2 + this.addin) <<32) + Integer.toUnsignedLong(unique);
+
+            int dx = WorldEngine.getX(this.position) - (centerBlockX >> (5 + level));
+            int dz = WorldEngine.getZ(this.position) - (centerBlockZ >> (5 + level));
+            long distSq = (long)dx*dx + (long)dz*dz;
+
+            long base = (lvl*3L + Math.min(this.attempts, 3))*2 + this.addin;
+            this.priority = (base << 48) | (Math.min(distSq, 0xFFFFFFL) << 20) | (unique & 0xFFFFFL);
             this.addin = 0;
         }
+    }
+
+    public void setCenter(int x, int z) {
+        this.centerBlockX = x;
+        this.centerBlockZ = z;
     }
 
     private final AtomicInteger holdingSectionCount = new AtomicInteger();//Used to limit section holding
@@ -365,5 +380,9 @@ public class RenderGenerationService {
 
     public int getTaskCount() {
         return this.taskQueueCount.get();
+    }
+
+    public int getMaxTasks() {
+        return 5000;
     }
 }

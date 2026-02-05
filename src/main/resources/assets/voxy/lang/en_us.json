@@ -29,5 +29,14 @@
   "voxy.config.general.vanilla_fog.tooltip": "Enables or disables vanilla fog effect",
 
   "voxy.config.general.render_statistics": "Enable render statistics",
-  "voxy.config.general.render_statistics.tooltip": "Enable render statistics in F3 menu, useful for debugging"
+  "voxy.config.general.render_statistics.tooltip": "Enable render statistics in F3 menu, useful for debugging",
+
+  "voxy.config.general.maxVramUsage": "Max VRAM Usage",
+  "voxy.config.general.maxVramUsage.tooltip": "Maximum amount of VRAM Voxy is allowed to use for geometry",
+
+  "voxy.config.general.targetFPS": "Target FPS",
+  "voxy.config.general.targetFPS.tooltip": "Target FPS for auto-quality adjustment",
+
+  "voxy.config.general.atmospheric_fog": "Enable atmospheric fog (Experimental)",
+  "voxy.config.general.atmospheric_fog.tooltip": "Enables a realistic atmospheric scattering fog effect"
 }

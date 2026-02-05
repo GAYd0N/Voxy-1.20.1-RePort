@@ -342,8 +342,9 @@ public class VoxyRenderSystem {
         //only increase quality while there are very few mesh queues, this stops,
         // e.g. while flying and is rendering alot of low quality chunks
         boolean canDecreaseSize = this.renderGen.getTaskCount() < 300;
-        int MIN_FPS = 55;
-        int MAX_FPS = 65;
+        int targetFPS = VoxyConfig.CONFIG.targetFPS;
+        int MIN_FPS = targetFPS - 5;
+        int MAX_FPS = targetFPS + 5;
         float INCREASE_PER_SECOND = 60;
         float DECREASE_PER_SECOND = 30;
         //Auto fps targeting
@@ -478,6 +479,8 @@ public class VoxyRenderSystem {
         var override = System.getProperty("voxy.geometryBufferSizeOverrideMB", "");
         if (!override.isEmpty()) {
             geometryCapacity = Long.parseLong(override)*1024L*1024L;
+        } else {
+            geometryCapacity = Math.min(geometryCapacity, (long)VoxyConfig.CONFIG.maxVramUsageMB * 1024L * 1024L);
         }
         return geometryCapacity;
     }

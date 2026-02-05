@@ -29,5 +29,14 @@
   "voxy.config.general.vanilla_fog.tooltip": "启用或禁用原版雾效",
 
   "voxy.config.general.render_statistics": "启用渲染统计",
-  "voxy.config.general.render_statistics.tooltip": "在F3菜单中启用渲染统计，便于调试"
+  "voxy.config.general.render_statistics.tooltip": "在F3菜单中启用渲染统计，便于调试",
+
+  "voxy.config.general.maxVramUsage": "最大显存占用",
+  "voxy.config.general.maxVramUsage.tooltip": "Voxy 允许使用的最大几何数据显存量",
+
+  "voxy.config.general.targetFPS": "目标 FPS",
+  "voxy.config.general.targetFPS.tooltip": "自动画质调整的目标帧率",
+
+  "voxy.config.general.atmospheric_fog": "启用大气雾效（实验性）",
+  "voxy.config.general.atmospheric_fog.tooltip": "启用更真实的模拟大气散射的雾气效果"
 }

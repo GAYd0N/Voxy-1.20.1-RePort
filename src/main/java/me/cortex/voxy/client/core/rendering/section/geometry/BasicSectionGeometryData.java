@@ -79,6 +79,22 @@ public class BasicSectionGeometryData implements IGeometryData {
         }
     }
 
+    public void trimCommitment(long highWaterMarkElements) {
+        if (!this.geometryBuffer.isSparse()) return;
+        long size = (highWaterMarkElements * 8L + 65535L) & ~65535L;
+        // If we are significantly over-committed (e.g., by more than 128MB), de-commit some memory
+        if (this.sparseCommitment - size > 1024L * 1024L * 128L) {
+            long shrinkTo = size + 1024L * 1024L * 64L; // Keep 64MB as a buffer to prevent thrashing
+            shrinkTo = (shrinkTo + 65535L) & ~65535L;
+            if (shrinkTo < this.sparseCommitment) {
+                glBindBuffer(GL_ARRAY_BUFFER, this.geometryBuffer.id);
+                glBufferPageCommitmentARB(GL_ARRAY_BUFFER, shrinkTo, this.sparseCommitment - shrinkTo, false);
+                glBindBuffer(GL_ARRAY_BUFFER, 0);
+                this.sparseCommitment = shrinkTo;
+            }
+        }
+    }
+
     public GlBuffer getGeometryBuffer() {
         return this.geometryBuffer;
     }
@@ -132,7 +148,7 @@ public class BasicSectionGeometryData implements IGeometryData {
 
                 long TIMEOUT = 2500;
 
-                while (System.currentTimeMillis() - start > TIMEOUT) {//Wait up to 2.5 seconds for memory to release
+                while (System.currentTimeMillis() - start < TIMEOUT) {//Wait up to 2.5 seconds for memory to release
                     glFinish();
                     if (Capabilities.INSTANCE.getFreeDedicatedGpuMemory() - gpuMemory > releaseSize) break;
                 }

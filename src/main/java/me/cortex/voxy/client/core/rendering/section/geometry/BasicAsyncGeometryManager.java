@@ -146,6 +146,10 @@ public class BasicAsyncGeometryManager implements IGeometryManager {
         return this.usedCapacity * GEOMETRY_ELEMENT_SIZE;
     }
 
+    public long getGeometryHighWaterMark() {
+        return this.allocationHeap.getSize();
+    }
+
     public IntOpenHashSet getUpdateIds() {
         return this.invalidatedIds;
     }

@@ -6,7 +6,7 @@ import me.cortex.voxy.common.world.WorldEngine;
 import java.util.function.LongConsumer;
 
 public class RenderDistanceTracker {
-    private static final int CHECK_DISTANCE_BLOCKS = 128;
+    private static final int CHECK_DISTANCE_BLOCKS = 64;
     private final LongConsumer addTopLevelNode;
     private final LongConsumer removeTopLevelNode;
     private final int processRate;

@@ -182,16 +182,18 @@ public class AsyncNodeManager {
 
     private void run() {
         if (this.workCounter.get() <= 0) {
-            //TODO: here, instead of parking, we can do more work on other sub-tasks such as filtering the mesh build queue
-            LockSupport.park();
+            // Smart Backoff: Spin briefly before parking to avoid context switch overhead
+            for (int i = 0; i < 1000; i++) {
+                if (this.workCounter.get() > 0 || !this.running) break;
+                Thread.onSpinWait();
+            }
+
+            if (this.workCounter.get() <= 0) {
+                LockSupport.park();
+            }
+
             if (this.workCounter.get() <= 0 || !this.running) {//No work
                 return;
-            }
-            //This is a funny thing, wait a bit, this allows for better batching, but this thread is independent of everything else so waiting a bit should be mostly ok
-            try {
-                Thread.sleep(10);
-            } catch (InterruptedException e) {
-                throw new RuntimeException(e);
             }
         }
 
@@ -476,6 +478,7 @@ public class AsyncNodeManager {
 
         results.geometrySectionCount = this.geometryManager.getSectionCount();
         results.usedGeometry = this.geometryManager.getGeometryUsedBytes();
+        results.geometryHighWaterMark = this.geometryManager.getGeometryHighWaterMark();
         results.currentMaxNodeId = this.manager.getCurrentMaxNodeId();
 
         this.needsWaitForSync |= results.geometryUpload.currentElemCopyAmount*8L > 2L<<20;//2mb limit per frame
@@ -514,6 +517,7 @@ public class AsyncNodeManager {
             var store = (BasicSectionGeometryData)this.geometryData;
 
             store.setSectionCount(results.geometrySectionCount);
+            store.trimCommitment(results.geometryHighWaterMark);
 
             var upload = results.geometryUpload;
             if (!upload.dataUploadPoints.isEmpty()) {
@@ -797,6 +801,7 @@ public class AsyncNodeManager {
         //Deltas for geometry store
         private int geometrySectionCount;
         private long usedGeometry;
+        private long geometryHighWaterMark;
         private final ComputeMemoryCopy geometryUpload = new ComputeMemoryCopy();
 
         //Gpu geometry downloads
@@ -818,6 +823,7 @@ public class AsyncNodeManager {
             this.tlnDelta.clear();
             this.geometrySectionCount = 0;
             this.usedGeometry = 0;
+            this.geometryHighWaterMark = 0;
             this.geometryUpload.reset();
         }
 
