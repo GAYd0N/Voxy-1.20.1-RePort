@@ -10,11 +10,16 @@ import me.cortex.voxy.common.world.WorldEngine;
 import me.cortex.voxy.common.world.WorldUpdater;
 import me.cortex.voxy.commonImpl.VoxyCommon;
 import me.cortex.voxy.commonImpl.WorldIdentifier;
+import net.minecraft.core.Holder;
 import net.minecraft.core.SectionPos;
+import net.minecraft.world.level.biome.Biome;
 import net.minecraft.world.level.LightLayer;
+import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.chunk.DataLayer;
 import net.minecraft.world.level.chunk.LevelChunk;
 import net.minecraft.world.level.chunk.LevelChunkSection;
+import net.minecraft.world.level.chunk.PalettedContainer;
+import net.minecraft.world.level.chunk.PalettedContainerRO;
 import net.minecraft.world.level.lighting.LayerLightSectionStorage;
 import org.jetbrains.annotations.NotNull;
 
@@ -23,7 +28,7 @@ import java.util.concurrent.ConcurrentLinkedDeque;
 public class VoxelIngestService {
     private static final ThreadLocal<VoxelizedSection> SECTION_CACHE = ThreadLocal.withInitial(VoxelizedSection::createEmpty);
     private final Service service;
-    private record IngestSection(int cx, int cy, int cz, WorldEngine world, LevelChunkSection section, DataLayer blockLight, DataLayer skyLight){}
+    private record IngestSection(int cx, int cy, int cz, WorldEngine world, PalettedContainer<BlockState> states, PalettedContainerRO<Holder<Biome>> biomes, boolean onlyAir, DataLayer blockLight, DataLayer skyLight){}
     private final ConcurrentLinkedDeque<IngestSection> ingestQueue = new ConcurrentLinkedDeque<>();
 
     public VoxelIngestService(ServiceManager pool) {
@@ -34,22 +39,32 @@ public class VoxelIngestService {
         var task = this.ingestQueue.pop();
         task.world.markActive();
 
-        var section = task.section;
         var vs = SECTION_CACHE.get().setPosition(task.cx, task.cy, task.cz);
 
-        if (section.hasOnlyAir() && task.blockLight==null && task.skyLight==null) {//If the chunk section has lighting data, propagate it
+        if (task.onlyAir && task.blockLight==null && task.skyLight==null) {
             WorldUpdater.insertUpdate(task.world, vs.zero());
         } else {
             VoxelizedSection csec = WorldConversionFactory.convert(
                     SECTION_CACHE.get(),
                     task.world.getMapper(),
-                    section.getStates(),
-                    section.getBiomes(),
+                    task.states,
+                    task.biomes,
                     getLightingSupplier(task)
             );
             WorldConversionFactory.mipSection(csec, task.world.getMapper());
             WorldUpdater.insertUpdate(task.world, csec);
         }
+    }
+
+    private static IngestSection snapshotSection(int cx, int cy, int cz, WorldEngine world, LevelChunkSection section, DataLayer blockLight, DataLayer skyLight) {
+        PalettedContainer<BlockState> states = section.getStates().copy();
+        PalettedContainerRO<Holder<Biome>> biomes = section.getBiomes();
+        if (biomes instanceof PalettedContainer<Holder<Biome>> container) {
+            biomes = container.copy();
+        } else {
+            biomes = biomes.recreate();
+        }
+        return new IngestSection(cx, cy, cz, world, states, biomes, section.hasOnlyAir(), blockLight, skyLight);
     }
 
     @NotNull
@@ -119,7 +134,7 @@ public class VoxelIngestService {
             for (var section : chunk.getSections()) {
                 i++;
                 if (section == null || !shouldIngestSection(section, chunk.getPos().x, i, chunk.getPos().z)) continue;
-                this.ingestQueue.add(new IngestSection(chunk.getPos().x, i, chunk.getPos().z, engine, section, null, null));
+                this.ingestQueue.add(snapshotSection(chunk.getPos().x, i, chunk.getPos().z, engine, section, null, null));
                 try {
                     this.service.execute();
                 } catch (Exception e) {
@@ -159,7 +174,7 @@ public class VoxelIngestService {
             //    continue;
             //}
 
-            this.ingestQueue.add(new IngestSection(chunk.getPos().x, i, chunk.getPos().z, engine, section, bl, sl));//TODO: fixme, this is technically not safe todo on the chunk load ingest, we need to copy the section data so it cant be modified while being read
+            this.ingestQueue.add(snapshotSection(chunk.getPos().x, i, chunk.getPos().z, engine, section, bl, sl));
             try {
                 this.service.execute();
             } catch (Exception e) {
@@ -195,7 +210,7 @@ public class VoxelIngestService {
     }
 
     private boolean rawIngest0(WorldEngine engine, LevelChunkSection section, int x, int y, int z, DataLayer bl, DataLayer sl) {
-        this.ingestQueue.add(new IngestSection(x, y, z, engine, section, bl, sl));
+        this.ingestQueue.add(snapshotSection(x, y, z, engine, section, bl, sl));
         try {
             this.service.execute();
             return true;
