@@ -47,6 +47,9 @@ public class RedisStorageBackend extends StorageBackend {
             if (result == null) {
                 return null;
             }
+            if (result.length > scratch.size) {
+                throw new IllegalArgumentException("Scratch buffer too small, requested: " + result.length + " capacity: " + scratch.size);
+            }
             //Need to copy to native memory
             UnsafeUtil.memcpy(result, scratch.address);
             return scratch.subSize(result.length);
