@@ -62,24 +62,44 @@ public class ModelTextureBakery {
     }
 
     private void bakeBlockModel(BlockState state, RenderType layer) {
-        if (state.getRenderShape() == RenderShape.INVISIBLE) {
-            return;//Dont bake if invisible
+        // 必须是普通模型
+        if (state.getRenderShape() != RenderShape.MODEL) {
+            return;
         }
+
+        // BlockEntity不参与烘焙
+        if (state.hasBlockEntity()) {
+            return;
+        }
+
         var model = Minecraft.getInstance()
                 .getModelManager()
                 .getBlockModelShaper()
                 .getBlockModel(state);
 
+        // 跳过动态/自定义渲染模型
+        if (model.isCustomRenderer()) {
+            return;
+        }
+
         int meta = getMetaFromLayer(layer);
 
-        for (Direction direction : new Direction[]{Direction.DOWN, Direction.UP, Direction.NORTH, Direction.SOUTH, Direction.WEST, Direction.EAST, null}) {
+        for (Direction direction : new Direction[]{
+                Direction.DOWN, Direction.UP,
+                Direction.NORTH, Direction.SOUTH,
+                Direction.WEST, Direction.EAST,
+                null
+        }) {
             var quads = model.getQuads(state, direction, new SingleThreadedRandomSource(42L));
+            if (quads.isEmpty()) {
+                continue;
+            }
+
             for (var quad : quads) {
-                this.vc.quad(quad, meta|(quad.isTinted()?4:0));
+                this.vc.quad(quad, meta | (quad.isTinted() ? 4 : 0));
             }
         }
     }
-
 
     private void bakeFluidState(BlockState state, RenderType layer, int face) {
         {
