@@ -18,6 +18,11 @@ Do not redistribute.
 - **性能优化**
     - 优化渲染系统：将 `glFinish` 替换为 `glFlush` 并引入 GPU 围栏（Fence）同步，大幅减少 CPU 渲染等待时间，优化内存释放流程。
     - 优化体素化（Voxelization）过程：引入对象池复用，重构光照数据获取方式，减少内存分配开销。
+- **⚠️ 重大修复：LOD 生成缺失问题**
+    - **彻底修复了 `VoxelIngestService` 的任务积压 Bug**：修正了信号量（Semaphore）释放逻辑，解决了之前每 16 个区块任务仅处理 1 个的严重缺陷。
+    - **优化 LOD 触发时机**：确保区块首次渲染时即刻触发 LOD 摄取，大幅提升了新区块的 LOD 生成可靠性。
+    - **性能权重平衡**：调整了摄取服务的 CPU 优先级，防止其过度占用资源导致渲染生成服务“饿死”。
+    - **高速移动支持**：放宽了区块摄取的状态门槛，显著提升了高速移动时的 LOD 同步响应速度。
 - **构建与环境**
     - 稳定了 Fabric Loom 版本，移除特定的 CI 条件逻辑，确保构建的一致性。
     - 更新模组版本至 `0.2.6-alpha-polished.2`。
@@ -38,6 +43,11 @@ This is a Voxy version compiled specifically for **1.20.1**, featuring compatibi
 - **Performance Optimizations**
     - Rendering: Replaced `glFinish` with `glFlush` and implemented GPU Fence synchronization to reduce CPU wait time and optimize memory release.
     - Voxelization: Optimized lighting data management with object pooling and refactored data access for better performance.
+- **⚠️ CRITICAL FIX: LOD Generation Issues**
+    - **Resolved `VoxelIngestService` Task Backlog**: Fixed a critical semaphore release bug that caused only 1/16 of tasks to be processed per section.
+    - **Optimized LOD Triggering**: Ensured LOD ingestion is triggered immediately upon initial render, significantly improving generation reliability.
+    - **Balanced Performance Weights**: Adjusted service priorities to prevent the ingest service from starving the render generation service.
+    - **High-Speed Movement Support**: Relaxed chunk status requirements for ingestion, greatly enhancing LOD synchronization speed during fast movement.
 - **Build & Environment**
     - Stabilized Fabric Loom version and cleaned up build scripts for better reproducibility.
     - Updated mod version to `0.2.6-alpha-polished.2`.
