@@ -11,6 +11,7 @@ import me.cortex.voxy.client.core.rendering.hierachical.HierarchicalOcclusionTra
 import me.cortex.voxy.client.core.rendering.hierachical.NodeCleaner;
 import me.cortex.voxy.client.core.rendering.post.FullscreenBlit;
 import me.cortex.voxy.client.core.rendering.util.DepthFramebuffer;
+import com.mojang.blaze3d.systems.RenderSystem;
 import net.minecraft.client.Minecraft;
 import org.joml.Matrix4f;
 import org.lwjgl.system.MemoryStack;
@@ -42,7 +43,10 @@ public class NormalRenderPipeline extends AbstractRenderPipeline {
     private final GlFramebuffer fbSSAO = new GlFramebuffer();
     private final DepthFramebuffer fb = new DepthFramebuffer(GL_DEPTH24_STENCIL8);
 
-    private final FullscreenBlit finalBlit;
+    private FullscreenBlit finalBlit;
+    private boolean lastAtmosphericFog;
+    private boolean lastEnvironmentalFog;
+    private boolean lastRenderVanillaFog;
 
     private final Shader ssaoCompute = Shader.make()
             .add(ShaderType.COMPUTE, "voxy:post/ssao.comp")
@@ -50,9 +54,20 @@ public class NormalRenderPipeline extends AbstractRenderPipeline {
 
     protected NormalRenderPipeline(AsyncNodeManager nodeManager, NodeCleaner nodeCleaner, HierarchicalOcclusionTraverser traversal, BooleanSupplier frexSupplier) {
         super(nodeManager, nodeCleaner, traversal, frexSupplier);
+        this.rebuildFinalBlit();
+    }
+
+    private void rebuildFinalBlit() {
+        if (this.finalBlit != null) {
+            this.finalBlit.delete();
+        }
+        this.lastAtmosphericFog = VoxyConfig.CONFIG.atmosphericFog;
+        this.lastEnvironmentalFog = VoxyConfig.CONFIG.environmentalFog;
+        this.lastRenderVanillaFog = VoxyConfig.CONFIG.renderVanillaFog;
         this.finalBlit = new FullscreenBlit("voxy:post/blit_texture_depth_cutout.frag",
                 a->a.define("EMIT_COLOUR")
-                        .defineIf("USE_ATMOSPHERIC_FOG", VoxyConfig.CONFIG.atmosphericFog));
+                        .defineIf("USE_ATMOSPHERIC_FOG", this.lastAtmosphericFog)
+                        .defineIf("USE_ENV_FOG", this.lastEnvironmentalFog && this.lastRenderVanillaFog));
     }
 
     @Override
@@ -106,17 +121,40 @@ public class NormalRenderPipeline extends AbstractRenderPipeline {
 
     @Override
     protected void finish(Viewport<?> viewport, int sourceFrameBuffer, int srcWidth, int srcHeight) {
+        if (this.lastAtmosphericFog != VoxyConfig.CONFIG.atmosphericFog || 
+            this.lastEnvironmentalFog != VoxyConfig.CONFIG.environmentalFog ||
+            this.lastRenderVanillaFog != VoxyConfig.CONFIG.renderVanillaFog) {
+            this.rebuildFinalBlit();
+        }
         this.finalBlit.bind();
+
+        if (VoxyConfig.CONFIG.environmentalFog && VoxyConfig.CONFIG.renderVanillaFog) {
+            try (var stack = MemoryStack.stackPush()) {
+                float start = RenderSystem.getShaderFogStart();
+                float end = RenderSystem.getShaderFogEnd();
+                float diff = end - start;
+                if (Math.abs(diff) < 0.0001f) diff = 0.0001f;
+                float invDiff = 1.0f / diff;
+                var params = stack.floats(end, invDiff, -start * invDiff);
+                nglUniform3fv(4, 1, MemoryUtil.memAddress(params));
+
+                var color = RenderSystem.getShaderFogColor();
+                var colorParams = stack.floats(color[0], color[1], color[2]);
+                nglUniform3fv(5, 1, MemoryUtil.memAddress(colorParams));
+            }
+        }
 
         if (VoxyConfig.CONFIG.atmosphericFog) {
             try (var stack = MemoryStack.stackPush()) {
                 // density, falloff, start, unused
-                var params = stack.floats(0.001f, 1.5f, 128.0f, 0.0f);
+                // Further increased density and adjusted parameters for better visibility
+                var params = stack.floats(0.005f, 1.2f, 32.0f, 0.0f);
                 nglUniform4fv(6, 1, MemoryUtil.memAddress(params));
                 
-                // atmospheric fog color (bluish grey)
-                var color = stack.floats(0.7f, 0.8f, 0.9f);
-                nglUniform3fv(7, 1, MemoryUtil.memAddress(color));
+                // Use vanilla fog color for atmospheric fog to match the environment
+                var color = RenderSystem.getShaderFogColor();
+                var colorParams = stack.floats(color[0], color[1], color[2]);
+                nglUniform3fv(7, 1, MemoryUtil.memAddress(colorParams));
             }
         }
 

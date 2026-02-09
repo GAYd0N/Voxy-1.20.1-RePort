@@ -25,9 +25,10 @@ Do not redistribute.
     - **高速移动支持**：放宽了区块摄取的状态门槛，显著提升了高速移动时的 LOD 同步响应速度。
 - **构建与环境**
     - 稳定了 Fabric Loom 版本，移除特定的 CI 条件逻辑，确保构建的一致性。
-    - 更新模组版本至 `0.2.6-alpha-polished.2`。
+    - **Fabric 平台兼容性修复**：修复了在 Fabric 原生环境下由于 Mixin 方法签名不匹配导致的启动崩溃问题（针对 Sodium 0.5.13）。
+    - 更新模组版本至 `0.2.6-alpha-polished.4`。
 ### 测试
-经测试，使用信雅联接后在1.20.1版本的forge端目前较为正常，之前严重影响lod的bug也已修复，目前还在继续测试
+经测试，使用信雅联接后在1.20.1版本的forge端目前较为正常，Fabric 原生端也已修复崩溃问题。之前严重影响lod的bug也已修复，目前还在继续测试
 
 ---
 
@@ -50,4 +51,5 @@ This is a Voxy version compiled specifically for **1.20.1**, featuring compatibi
     - **High-Speed Movement Support**: Relaxed chunk status requirements for ingestion, greatly enhancing LOD synchronization speed during fast movement.
 - **Build & Environment**
     - Stabilized Fabric Loom version and cleaned up build scripts for better reproducibility.
-    - Updated mod version to `0.2.6-alpha-polished.2`.
+    - **Fabric Compatibility Fix**: Resolved startup crashes in native Fabric environments caused by Mixin method signature mismatches with Sodium 0.5.13.
+    - Updated mod version to `0.2.6-alpha-polished.4`.
