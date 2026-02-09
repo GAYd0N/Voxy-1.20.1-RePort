@@ -44,11 +44,12 @@ public class VoxelIngestService {
     private final ConcurrentLinkedDeque<IngestSection> ingestQueue = new ConcurrentLinkedDeque<>();
 
     public VoxelIngestService(ServiceManager pool) {
-        this.service = pool.createServiceNoCleanup(()->this::processJob, 5000, "Ingest service");
+        this.service = pool.createServiceNoCleanup(()->this::processJob, 1000, "Ingest service");
     }
 
     private void processJob() {
-        var task = this.ingestQueue.pop();
+        var task = this.ingestQueue.poll();
+        if (task == null) return;
         task.world.markActive();
 
         var vs = SECTION_CACHE.get().setPosition(task.cx, task.cy, task.cz);
@@ -115,15 +116,11 @@ public class VoxelIngestService {
 
         if (allEmpty&&!gotLighting) {
             //Special case all empty chunk columns, we need to clear it out
-            boolean added = false;
         i = chunk.getMinSection() - 1;
         for (var section : chunk.getSections()) {
             i++;
             if (section == null || !shouldIngestSection(section, chunk.getPos().x, i, chunk.getPos().z)) continue;
             this.ingestQueue.add(snapshotSection(chunk.getPos().x, i, chunk.getPos().z, engine, section, null, null));
-            added = true;
-        }
-        if (added) {
             try {
                 this.service.execute();
             } catch (Exception e) {
@@ -140,7 +137,6 @@ public class VoxelIngestService {
         var slp = lightingProvider.getLayerListener(LightLayer.SKY);
 
 
-        boolean added = false;
         i = chunk.getMinSection() - 1;
         for (var section : chunk.getSections()) {
             i++;
@@ -154,9 +150,6 @@ public class VoxelIngestService {
             byte[] slData = acquireLightData(sl != null ? sl.getData() : null);
 
             this.ingestQueue.add(snapshotSection(chunk.getPos().x, i, chunk.getPos().z, engine, section, blData, slData));
-            added = true;
-        }
-        if (added) {
             try {
                 this.service.execute();
             } catch (Exception e) {
