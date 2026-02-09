@@ -70,7 +70,7 @@ public class MixinRenderSectionManager {
         if (this.world.levelRenderer != null && VoxyConfig.CONFIG.ingestEnabled) {
             var cccm = this.world.getChunkSource();
             if (cccm != null) {
-                var chunk = cccm.getChunk(x, z, ChunkStatus.FULL, false);
+                var chunk = cccm.getChunk(x, z, ChunkStatus.EMPTY, false);
                 if (chunk != null) {
                     VoxelIngestService.tryAutoIngestChunk(chunk);
                 }
@@ -112,28 +112,18 @@ public class MixinRenderSectionManager {
         }
         int x = instance.getChunkX(), y = instance.getChunkY(), z = instance.getChunkZ();
 
-        if (wasBuilt) {
-            var tracker = ((AccessorChunkTracker)ChunkTrackerHolder.get(this.world)).getChunkStatus();
-            //in theory the cache value could be wrong but is so soso unlikely and at worst means we either duplicate ingest a chunk
-            // which... could be bad ;-; or we dont ingest atall which is ok!
-            long key = ChunkPos.asLong(x, z);
-            if (key != this.cachedChunkPos) {
-                this.cachedChunkPos = key;
-                this.cachedChunkStatus = tracker.getOrDefault(key, 0);
-            }
-            if (this.cachedChunkStatus == 3) {//If this chunk still has surrounding chunks
-                var section = this.world.getChunk(x,z).getSection(y-this.bottomSectionY);
-                var lp = this.world.getLightEngine();
+        // Ingest the section if its built status changed (either added or removed)
+        // This ensures we capture the data even if onChunkAdded failed due to lighting not being ready
+        var section = this.world.getChunk(x,z).getSection(y-this.bottomSectionY);
+        var lp = this.world.getLightEngine();
 
-                var csp = SectionPos.of(x,y,z);
-                var blp = lp.getLayerListener(LightLayer.BLOCK).getDataLayerData(csp);
-                var slp = lp.getLayerListener(LightLayer.SKY).getDataLayerData(csp);
+        var csp = SectionPos.of(x,y,z);
+        var blp = lp.getLayerListener(LightLayer.BLOCK).getDataLayerData(csp);
+        var slp = lp.getLayerListener(LightLayer.SKY).getDataLayerData(csp);
 
-                //Note: we dont do this check and just blindly ingest, it shouldbe ok :tm:
-                //if (blp != null || slp != null)
-                    VoxelIngestService.rawIngest(system.getEngine(), section, x,y,z, blp==null?null:blp.copy(), slp==null?null:slp.copy());
-            }
-        }
+        //Note: we dont do this check and just blindly ingest, it shouldbe ok :tm:
+        //if (blp != null || slp != null)
+            VoxelIngestService.rawIngest(system.getEngine(), section, x,y,z, blp==null?null:blp.copy(), slp==null?null:slp.copy());
 
         //Do some very cheeky stuff for MiB
         if (VoxyCommon.IS_MINE_IN_ABYSS) {
