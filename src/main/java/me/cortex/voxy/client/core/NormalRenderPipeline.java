@@ -25,6 +25,9 @@ import static org.lwjgl.opengl.GL11.GL_BLEND;
 import static org.lwjgl.opengl.GL11.GL_ONE;
 import static org.lwjgl.opengl.GL11.GL_ONE_MINUS_SRC_ALPHA;
 import static org.lwjgl.opengl.GL11.GL_SRC_ALPHA;
+import static org.lwjgl.opengl.GL11.glBlendFunc;
+import static org.lwjgl.opengl.GL11.glDepthMask;
+import static org.lwjgl.opengl.GL11.glDisable;
 import static org.lwjgl.opengl.GL11.glEnable;
 import static org.lwjgl.opengl.GL11C.GL_NEAREST;
 import static org.lwjgl.opengl.GL11C.GL_RGBA8;
@@ -32,8 +35,10 @@ import static org.lwjgl.opengl.GL14.glBlendFuncSeparate;
 import static org.lwjgl.opengl.GL15.GL_READ_WRITE;
 import static org.lwjgl.opengl.GL20C.nglUniform3fv;
 import static org.lwjgl.opengl.GL20C.nglUniform4fv;
+import static org.lwjgl.opengl.GL20C.nglUniformMatrix4fv;
 import static org.lwjgl.opengl.GL30C.*;
 import static org.lwjgl.opengl.GL43.GL_DEPTH_STENCIL_TEXTURE_MODE;
+import static org.lwjgl.opengl.GL45.glGetNamedFramebufferAttachmentParameteri;
 import static org.lwjgl.opengl.GL45C.glBindTextureUnit;
 import static org.lwjgl.opengl.GL45C.glTextureParameterf;
 
@@ -44,6 +49,7 @@ public class NormalRenderPipeline extends AbstractRenderPipeline {
     private final DepthFramebuffer fb = new DepthFramebuffer(GL_DEPTH24_STENCIL8);
 
     private FullscreenBlit finalBlit;
+    private FullscreenBlit unifiedFogBlit;
     private boolean lastAtmosphericFog;
     private boolean lastEnvironmentalFog;
     private boolean lastRenderVanillaFog;
@@ -61,13 +67,21 @@ public class NormalRenderPipeline extends AbstractRenderPipeline {
         if (this.finalBlit != null) {
             this.finalBlit.delete();
         }
+        if (this.unifiedFogBlit != null) {
+            this.unifiedFogBlit.delete();
+        }
         this.lastAtmosphericFog = VoxyConfig.CONFIG.atmosphericFog;
         this.lastEnvironmentalFog = VoxyConfig.CONFIG.environmentalFog;
         this.lastRenderVanillaFog = VoxyConfig.CONFIG.renderVanillaFog;
+        
+        // finalBlit now only handles LOD blitting without fog
         this.finalBlit = new FullscreenBlit("voxy:post/blit_texture_depth_cutout.frag",
-                a->a.define("EMIT_COLOUR")
-                        .defineIf("USE_ATMOSPHERIC_FOG", this.lastAtmosphericFog)
-                        .defineIf("USE_ENV_FOG", this.lastEnvironmentalFog && this.lastRenderVanillaFog));
+                a->a.define("EMIT_COLOUR"));
+
+        // unifiedFogBlit handles fog for both vanilla and LODs
+        this.unifiedFogBlit = new FullscreenBlit("voxy:post/unified_fog.frag",
+                a->a.defineIf("USE_ATMOSPHERIC_FOG", this.lastAtmosphericFog)
+                    .defineIf("USE_ENV_FOG", this.lastEnvironmentalFog && this.lastRenderVanillaFog));
     }
 
     @Override
@@ -126,47 +140,65 @@ public class NormalRenderPipeline extends AbstractRenderPipeline {
             this.lastRenderVanillaFog != VoxyConfig.CONFIG.renderVanillaFog) {
             this.rebuildFinalBlit();
         }
+
+        // 1. Blit LODs into vanilla framebuffer (WITHOUT FOG)
         this.finalBlit.bind();
-
-        if (VoxyConfig.CONFIG.environmentalFog && VoxyConfig.CONFIG.renderVanillaFog) {
-            try (var stack = MemoryStack.stackPush()) {
-                float start = RenderSystem.getShaderFogStart();
-                float end = RenderSystem.getShaderFogEnd();
-                float diff = end - start;
-                if (Math.abs(diff) < 0.0001f) diff = 0.0001f;
-                float invDiff = 1.0f / diff;
-                var params = stack.floats(end, invDiff, -start * invDiff);
-                nglUniform3fv(4, 1, MemoryUtil.memAddress(params));
-
-                var color = RenderSystem.getShaderFogColor();
-                var colorParams = stack.floats(color[0], color[1], color[2]);
-                nglUniform3fv(5, 1, MemoryUtil.memAddress(colorParams));
-            }
-        }
-
-        if (VoxyConfig.CONFIG.atmosphericFog) {
-            try (var stack = MemoryStack.stackPush()) {
-                // density, falloff, start, unused
-                // Further increased density and adjusted parameters for better visibility
-                var params = stack.floats(0.005f, 1.2f, 32.0f, 0.0f);
-                nglUniform4fv(6, 1, MemoryUtil.memAddress(params));
-                
-                // Use vanilla fog color for atmospheric fog to match the environment
-                var color = RenderSystem.getShaderFogColor();
-                var colorParams = stack.floats(color[0], color[1], color[2]);
-                nglUniform3fv(7, 1, MemoryUtil.memAddress(colorParams));
-            }
-        }
-
         glBindTextureUnit(3, this.colourSSAOTex.id);
-
-        //Do alpha blending
-
+        
         glEnable(GL_BLEND);
         glBlendFuncSeparate(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
         AbstractRenderPipeline.transformBlitDepth(this.finalBlit, this.fb.getDepthTex().id, sourceFrameBuffer, viewport, new Matrix4f(viewport.vanillaProjection).mul(viewport.modelView));
         glDisable(GL_BLEND);
-        //glBlitNamedFramebuffer(this.fbSSAO.id, sourceFrameBuffer, 0,0, viewport.width, viewport.height, 0,0, viewport.width, viewport.height, GL_COLOR_BUFFER_BIT, GL_NEAREST);
+
+        // 2. Apply Unified Fog to the entire scene
+        if (this.lastAtmosphericFog || (this.lastEnvironmentalFog && this.lastRenderVanillaFog)) {
+            this.unifiedFogBlit.bind();
+            
+            // Get the depth texture from the source framebuffer (vanilla + LODs)
+            int depthTexture = glGetNamedFramebufferAttachmentParameteri(sourceFrameBuffer, GL_DEPTH_ATTACHMENT, GL_FRAMEBUFFER_ATTACHMENT_OBJECT_NAME);
+            glBindTextureUnit(0, depthTexture);
+
+            try (var stack = MemoryStack.stackPush()) {
+                // invProjMat
+                long ptr = stack.nmalloc(4*4*4);
+                new Matrix4f(viewport.vanillaProjection).invert().getToAddress(ptr);
+                nglUniformMatrix4fv(1, 1, false, ptr);
+
+                if (this.lastEnvironmentalFog && this.lastRenderVanillaFog) {
+                    float start = RenderSystem.getShaderFogStart();
+                    float end = RenderSystem.getShaderFogEnd();
+                    float invDiff = 1.0f / (end - start);
+                    var params = stack.floats(end, invDiff, -start * invDiff);
+                    nglUniform3fv(4, 1, MemoryUtil.memAddress(params));
+
+                    var color = RenderSystem.getShaderFogColor();
+                    var colorParams = stack.floats(color[0], color[1], color[2]);
+                    nglUniform3fv(5, 1, MemoryUtil.memAddress(colorParams));
+                }
+
+                if (this.lastAtmosphericFog) {
+                    // density, falloff, start, unused
+                    var params = stack.floats(0.005f, 1.2f, 32.0f, 0.0f);
+                    nglUniform4fv(6, 1, MemoryUtil.memAddress(params));
+                    
+                    // atmospheric fog color (bluish grey)
+                    var color = RenderSystem.getShaderFogColor();
+                    var colorParams = stack.floats(color[0], color[1], color[2]);
+                    nglUniform3fv(7, 1, MemoryUtil.memAddress(colorParams));
+                }
+            }
+
+            // Blend the fog over the existing scene
+            glEnable(GL_BLEND);
+            glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+            glDepthMask(false);
+            glDisable(GL_DEPTH_TEST);
+            
+            this.unifiedFogBlit.blit();
+            
+            glDepthMask(true);
+            glDisable(GL_BLEND);
+        }
     }
 
     @Override
@@ -182,6 +214,9 @@ public class NormalRenderPipeline extends AbstractRenderPipeline {
     @Override
     public void free() {
         this.finalBlit.delete();
+        if (this.unifiedFogBlit != null) {
+            this.unifiedFogBlit.delete();
+        }
         this.ssaoCompute.free();
         this.fb.free();
         this.fbSSAO.free();
