@@ -38,6 +38,8 @@ import org.joml.Matrix4f;
 import org.joml.Matrix4fc;
 import org.lwjgl.opengl.GL11;
 
+import me.cortex.voxy.client.core.rendering.region.RenderRegionManager;
+
 import java.util.Arrays;
 import java.util.List;
 
@@ -63,6 +65,8 @@ public class VoxyRenderSystem {
     private final AsyncNodeManager nodeManager;
     private final NodeCleaner nodeCleaner;
     private final HierarchicalOcclusionTraverser traversal;
+    
+    private final RenderRegionManager regionManager;
 
 
     private final RenderDistanceTracker renderDistanceTracker;
@@ -115,6 +119,8 @@ public class VoxyRenderSystem {
                 world.getMapper().setBiomeCallback(this.modelService::addBiome);
 
                 this.nodeManager.start();
+                
+                this.regionManager = new RenderRegionManager(1 << 20);
             }
 
             this.pipeline = RenderPipelineFactory.createPipeline(this.nodeManager, this.nodeCleaner, this.traversal, this::frexStillHasWork);
@@ -270,6 +276,9 @@ public class VoxyRenderSystem {
             UploadStream.INSTANCE.tick();
 
             this.renderGen.setCenter((int)viewport.cameraX, (int)viewport.cameraZ);
+            
+            this.regionManager.setCameraPosition(viewport.cameraX, viewport.cameraY, viewport.cameraZ);
+            this.regionManager.update();
 
             while (this.renderDistanceTracker.setCenterAndProcess(viewport.cameraX, viewport.cameraZ) && VoxyClient.isFrexActive());//While FF is active, run until everything is processed
             TimingStatistics.I.start();
@@ -414,6 +423,7 @@ public class VoxyRenderSystem {
             this.renderGen.addDebugData(debug);
             this.nodeManager.addDebug(debug);
             this.pipeline.addDebug(debug);
+            this.regionManager.addDebugInfo(debug);
         }
         {
             TimingStatistics.update();
@@ -443,6 +453,8 @@ public class VoxyRenderSystem {
 
             this.geometryData.free();
             this.chunkBoundRenderer.free();
+            
+            this.regionManager.free();
 
             this.viewportSelector.free();
         } catch (Exception e) {Logger.error("Error shutting down renderer components", e);}
@@ -487,5 +499,9 @@ public class VoxyRenderSystem {
 
     public WorldEngine getEngine() {
         return this.worldIn;
+    }
+    
+    public RenderRegionManager getRegionManager() {
+        return this.regionManager;
     }
 }

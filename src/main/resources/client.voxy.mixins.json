@@ -22,6 +22,7 @@
     "minecraft.MixinClientPacketListener",
     "minecraft.MixinDebugScreenOverlay",
     "minecraft.MixinFogRenderer",
+    "minecraft.MixinLayerLightSectionStorage",
     // "minecraft.MixinGlDebug",
     "minecraft.MixinMinecraft",
     "minecraft.MixinRenderSystem",

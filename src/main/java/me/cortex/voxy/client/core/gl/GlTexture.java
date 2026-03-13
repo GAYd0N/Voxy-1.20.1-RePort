@@ -5,6 +5,9 @@ import me.cortex.voxy.common.util.TrackedObject;
 import static org.lwjgl.opengl.GL11.GL_RGBA8;
 import static org.lwjgl.opengl.GL11C.*;
 import static org.lwjgl.opengl.GL30.GL_DEPTH24_STENCIL8;
+import static org.lwjgl.opengl.GL30.GL_UNSIGNED_INT_24_8;
+import static org.lwjgl.opengl.GL32.GL_DEPTH32F_STENCIL8;
+import static org.lwjgl.opengl.GL32.GL_FLOAT_32_UNSIGNED_INT_24_8_REV;
 import static org.lwjgl.opengl.GL45C.*;
 
 public class GlTexture extends TrackedObject {
@@ -94,6 +97,32 @@ public class GlTexture extends TrackedObject {
     public int getLevels() {
         this.assertAllocated();
         return this.levels;
+    }
+
+    public int getPixelTransferFormat() {
+        this.assertAllocated();
+        return switch (this.format) {
+            case GL_RGBA8 -> GL_RGBA;
+            case GL_R32UI, GL_R32F -> GL_RED;
+            case GL_DEPTH_COMPONENT24, GL_DEPTH_COMPONENT32F, GL_DEPTH_COMPONENT32 -> GL_DEPTH_COMPONENT;
+            case GL_DEPTH24_STENCIL8 -> GL_DEPTH_STENCIL;
+            default -> throw new IllegalStateException("Unknown format");
+        };
+    }
+
+    public GlTexture zero() {
+        this.assertAllocated();
+        int type = switch (this.format) {
+            case GL_RGBA8, GL_R32UI -> GL_INT;
+            case GL_R32F, GL_DEPTH_COMPONENT24, GL_DEPTH_COMPONENT32F, GL_DEPTH_COMPONENT32 -> GL_FLOAT;
+            case GL_DEPTH24_STENCIL8 -> GL_UNSIGNED_INT_24_8;
+            case GL_DEPTH32F_STENCIL8 -> GL_FLOAT_32_UNSIGNED_INT_24_8_REV;
+            default -> throw new IllegalStateException("Unknown format");
+        };
+        for (int lvl = 0; lvl < this.levels; lvl++) {
+            nglClearTexImage(this.id, lvl, this.getPixelTransferFormat(), type, 0);
+        }
+        return this;
     }
 
     private long getEstimatedSize() {

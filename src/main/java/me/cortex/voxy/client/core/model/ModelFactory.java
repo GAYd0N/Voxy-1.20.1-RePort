@@ -882,7 +882,7 @@ public class ModelFactory {
         return total;
     }
     private static final MemoryBuffer SCRATCH_TEX = new MemoryBuffer((2L*3*computeSizeWithMips(MODEL_TEXTURE_SIZE))*4);
-    private static final int LAYERS = Integer.numberOfTrailingZeros(MODEL_TEXTURE_SIZE);
+    public static final int LAYERS = Integer.numberOfTrailingZeros(MODEL_TEXTURE_SIZE);
     //TODO: redo to batch blit, instead of 6 seperate blits, and also fix mipping
     private void putTextures(ColourDepthTextureData[] textures, MemoryBuffer into) {
         //if (MODEL_TEXTURE_SIZE != 16) {throw new IllegalStateException("THIS METHOD MUST BE REDONE IF THIS CONST CHANGES");}
