@@ -482,8 +482,19 @@ public class WorldImporter implements IDataImporter {
         byte[] blockLightData = section.getByteArray("BlockLight");
         byte[] skyLightData = section.getByteArray("SkyLight");
 
-        byte[] bl = blockLightData.length == 2048 ? blockLightData : null;
-        byte[] sl = skyLightData.length == 2048 ? skyLightData : null;
+        DataLayer blockLight;
+        if (blockLightData.length != 0) {
+            blockLight = new DataLayer(blockLightData);
+        } else {
+            blockLight = null;
+        }
+
+        DataLayer skyLight;
+        if (skyLightData.length != 0) {
+            skyLight = new DataLayer(skyLightData);
+        } else {
+            skyLight = null;
+        }
 
         var blockStatesRes = blockStateCodec.parse(NbtOps.INSTANCE, section.getCompound("block_states"));
         var blockStates = blockStatesRes.resultOrPartial(Logger::error).orElse(null);
@@ -501,8 +512,17 @@ public class WorldImporter implements IDataImporter {
                 this.world.getMapper(),
                 blockStates,
                 biomes,
-                bl,
-                sl
+                (bx, by, bz) -> {
+                    int block = 0;
+                    int sky = 0;
+                    if (blockLight != null) {
+                        block = blockLight.get(bx, by, bz);
+                    }
+                    if (skyLight != null) {
+                        sky = skyLight.get(bx, by, bz);
+                    }
+                    return (byte) (sky|(block<<4));
+                }
         );
 
         WorldConversionFactory.mipSection(csec, this.world.getMapper());
