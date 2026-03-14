@@ -1,19 +1,20 @@
 package me.cortex.voxy.client.core.model.bakery;
 
-
 import me.cortex.voxy.common.util.MemoryBuffer;
 import net.minecraft.client.renderer.block.model.BakedQuad;
 import org.lwjgl.system.MemoryUtil;
 
-import static me.cortex.voxy.client.core.model.bakery.BudgetBufferRenderer.VERTEX_FORMAT_SIZE;
-
 import com.mojang.blaze3d.vertex.VertexConsumer;
 
 public final class ReuseVertexConsumer implements VertexConsumer {
+    public static final int VERTEX_FORMAT_SIZE = 24;
     private MemoryBuffer buffer = new MemoryBuffer(8192);
     private long ptr;
     private int count;
     private int defaultMeta;
+
+    public boolean anyShaded;
+    public boolean anyDarkendTex;
 
     public ReuseVertexConsumer() {
         this.reset();
@@ -27,7 +28,7 @@ public final class ReuseVertexConsumer implements VertexConsumer {
     @Override
     public ReuseVertexConsumer vertex(double x, double y, double z) {
         this.ensureCanPut();
-        this.ptr += VERTEX_FORMAT_SIZE; this.count++; //Goto next vertex
+        this.ptr += VERTEX_FORMAT_SIZE; this.count++;
         this.meta(this.defaultMeta);
         MemoryUtil.memPutFloat(this.ptr, (float) x);
         MemoryUtil.memPutFloat(this.ptr + 4, (float) y);
@@ -68,17 +69,17 @@ public final class ReuseVertexConsumer implements VertexConsumer {
     }
 
     public ReuseVertexConsumer quad(BakedQuad quad, int metadata) {
+        this.anyShaded |= quad.isShade();
         this.ensureCanPut();
         int[] data = quad.getVertices();
         for (int i = 0; i < 4; i++) {
             float x = Float.intBitsToFloat(data[i * 8]);
             float y = Float.intBitsToFloat(data[i * 8 + 1]);
             float z = Float.intBitsToFloat(data[i * 8 + 2]);
-            this.vertex(x,y,z);
+            this.vertex(x, y, z);
             float u = Float.intBitsToFloat(data[i * 8 + 4]);
             float v = Float.intBitsToFloat(data[i * 8 + 5]);
-            this.uv(u,v);
-
+            this.uv(u, v);
             this.meta(metadata);
         }
         return this;
@@ -88,9 +89,8 @@ public final class ReuseVertexConsumer implements VertexConsumer {
         if ((long) (this.count + 5) * VERTEX_FORMAT_SIZE < this.buffer.size) {
             return;
         }
-        long offset = this.ptr-this.buffer.address;
-        //1.5x the size
-        var newBuffer = new MemoryBuffer((((int)(this.buffer.size*2)+VERTEX_FORMAT_SIZE-1)/VERTEX_FORMAT_SIZE)*VERTEX_FORMAT_SIZE);
+        long offset = this.ptr - this.buffer.address;
+        var newBuffer = new MemoryBuffer((((int)(this.buffer.size * 2) + VERTEX_FORMAT_SIZE - 1) / VERTEX_FORMAT_SIZE) * VERTEX_FORMAT_SIZE);
         this.buffer.cpyTo(newBuffer.address);
         this.buffer.free();
         this.buffer = newBuffer;
@@ -98,9 +98,11 @@ public final class ReuseVertexConsumer implements VertexConsumer {
     }
 
     public ReuseVertexConsumer reset() {
-        this.defaultMeta = 0;//RESET THE DEFAULT META
+        this.anyShaded = false;
+        this.anyDarkendTex = false;
+        this.defaultMeta = 0;
         this.count = 0;
-        this.ptr = this.buffer.address - VERTEX_FORMAT_SIZE;//the thing is first time this gets incremented by FORMAT_STRIDE
+        this.ptr = this.buffer.address - VERTEX_FORMAT_SIZE;
         return this;
     }
 
@@ -116,8 +118,8 @@ public final class ReuseVertexConsumer implements VertexConsumer {
     }
 
     public int quadCount() {
-        if (this.count%4 != 0) throw new IllegalStateException();
-        return this.count/4;
+        if (this.count % 4 != 0) throw new IllegalStateException();
+        return this.count / 4;
     }
 
     public long getAddress() {
@@ -126,16 +128,13 @@ public final class ReuseVertexConsumer implements VertexConsumer {
 
     @Override
     public void defaultColor(int red, int green, int blue, int alpha) {
-        return;
     }
 
     @Override
     public void endVertex() {
-        return;
     }
 
     @Override
     public void unsetDefaultColor() {
-        return;
     }
 }
