@@ -13,7 +13,10 @@ import me.cortex.voxy.client.core.rendering.post.FullscreenBlit;
 import me.cortex.voxy.client.core.rendering.util.DepthFramebuffer;
 import com.mojang.blaze3d.systems.RenderSystem;
 import net.minecraft.client.Minecraft;
+import net.minecraft.client.multiplayer.ClientLevel;
+import net.minecraft.util.Mth;
 import org.joml.Matrix4f;
+import org.joml.Vector3f;
 import org.lwjgl.system.MemoryStack;
 import org.lwjgl.system.MemoryUtil;
 
@@ -22,7 +25,6 @@ import java.util.function.BooleanSupplier;
 import static org.lwjgl.opengl.ARBComputeShader.glDispatchCompute;
 import static org.lwjgl.opengl.ARBShaderImageLoadStore.glBindImageTexture;
 import static org.lwjgl.opengl.GL11.GL_BLEND;
-import static org.lwjgl.opengl.GL11.GL_ONE;
 import static org.lwjgl.opengl.GL11.GL_ONE_MINUS_SRC_ALPHA;
 import static org.lwjgl.opengl.GL11.GL_SRC_ALPHA;
 import static org.lwjgl.opengl.GL11.glBlendFunc;
@@ -118,9 +120,9 @@ public class NormalRenderPipeline extends AbstractRenderPipeline {
         try (var stack = MemoryStack.stackPush()) {
             long ptr = stack.nmalloc(4*4*4);
             viewport.MVP.getToAddress(ptr);
-            nglUniformMatrix4fv(3, 1, false, ptr);//MVP
+            nglUniformMatrix4fv(3, 1, false, ptr);
             viewport.MVP.invert(new Matrix4f()).getToAddress(ptr);
-            nglUniformMatrix4fv(4, 1, false, ptr);//invMVP
+            nglUniformMatrix4fv(4, 1, false, ptr);
         }
 
 
@@ -141,25 +143,31 @@ public class NormalRenderPipeline extends AbstractRenderPipeline {
             this.rebuildFinalBlit();
         }
 
-        // 1. Blit LODs into vanilla framebuffer (WITHOUT FOG)
+        // Blit LODs into vanilla framebuffer (WITHOUT FOG)
         this.finalBlit.bind();
         glBindTextureUnit(3, this.colourSSAOTex.id);
         
         glEnable(GL_BLEND);
-        glBlendFuncSeparate(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
+        glBlendFuncSeparate(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
         AbstractRenderPipeline.transformBlitDepth(this.finalBlit, this.fb.getDepthTex().id, sourceFrameBuffer, viewport, new Matrix4f(viewport.vanillaProjection).mul(viewport.modelView));
         glDisable(GL_BLEND);
+    }
 
-        // 2. Apply Unified Fog to the entire scene
+    @Override
+    public void renderFog(Viewport<?> viewport, int sourceFrameBuffer, int srcWidth, int srcHeight) {
+        if (this.lastAtmosphericFog != VoxyConfig.CONFIG.atmosphericFog ||
+            this.lastEnvironmentalFog != VoxyConfig.CONFIG.environmentalFog ||
+            this.lastRenderVanillaFog != VoxyConfig.CONFIG.renderVanillaFog) {
+            this.rebuildFinalBlit();
+        }
+
         if (this.lastAtmosphericFog || (this.lastEnvironmentalFog && this.lastRenderVanillaFog)) {
             this.unifiedFogBlit.bind();
-            
-            // Get the depth texture from the source framebuffer (vanilla + LODs)
+
             int depthTexture = glGetNamedFramebufferAttachmentParameteri(sourceFrameBuffer, GL_DEPTH_ATTACHMENT, GL_FRAMEBUFFER_ATTACHMENT_OBJECT_NAME);
             glBindTextureUnit(0, depthTexture);
 
             try (var stack = MemoryStack.stackPush()) {
-                // invProjMat
                 long ptr = stack.nmalloc(4*4*4);
                 new Matrix4f(viewport.vanillaProjection).invert().getToAddress(ptr);
                 nglUniformMatrix4fv(1, 1, false, ptr);
@@ -177,25 +185,45 @@ public class NormalRenderPipeline extends AbstractRenderPipeline {
                 }
 
                 if (this.lastAtmosphericFog) {
-                    // density, falloff, start, unused
                     var params = stack.floats(0.005f, 1.2f, 32.0f, 0.0f);
                     nglUniform4fv(6, 1, MemoryUtil.memAddress(params));
-                    
-                    // atmospheric fog color (bluish grey)
-                    var color = RenderSystem.getShaderFogColor();
-                    var colorParams = stack.floats(color[0], color[1], color[2]);
-                    nglUniform3fv(7, 1, MemoryUtil.memAddress(colorParams));
+
+                    ClientLevel level = Minecraft.getInstance().level;
+                    if (level != null) {
+                        float partialTicks = Minecraft.getInstance().getFrameTime();
+                        float celestialAngle = level.getSunAngle(partialTicks);
+                        float sunY = Mth.cos(celestialAngle * ((float)Math.PI * 2F));
+                        float sunZ = Mth.sin(celestialAngle * ((float)Math.PI * 2F));
+                        float dayFactor = Mth.clamp(sunY * 0.5f + 0.5f, 0.0f, 1.0f);
+
+                        float sunColorR = Mth.lerp(dayFactor, 1.0f, 1.0f);
+                        float sunColorG = Mth.lerp(dayFactor, 0.6f, 0.95f);
+                        float sunColorB = Mth.lerp(dayFactor, 0.3f, 0.85f);
+
+                        float ambientR = Mth.lerp(dayFactor, 0.02f, 0.5f);
+                        float ambientG = Mth.lerp(dayFactor, 0.03f, 0.6f);
+                        float ambientB = Mth.lerp(dayFactor, 0.05f, 0.8f);
+
+                        var sunColorParams = stack.floats(sunColorR, sunColorG, sunColorB);
+                        nglUniform3fv(7, 1, MemoryUtil.memAddress(sunColorParams));
+
+                        var ambientColorParams = stack.floats(ambientR, ambientG, ambientB);
+                        nglUniform3fv(8, 1, MemoryUtil.memAddress(ambientColorParams));
+
+                        Vector3f sunDirView = new Matrix4f(viewport.modelView).transformDirection(new Vector3f(0.0f, sunY, sunZ)).normalize();
+                        var sunDirParams = stack.floats(sunDirView.x, sunDirView.y, sunDirView.z);
+                        nglUniform3fv(9, 1, MemoryUtil.memAddress(sunDirParams));
+                    }
                 }
             }
 
-            // Blend the fog over the existing scene
             glEnable(GL_BLEND);
             glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
             glDepthMask(false);
             glDisable(GL_DEPTH_TEST);
-            
+
             this.unifiedFogBlit.blit();
-            
+
             glDepthMask(true);
             glDisable(GL_BLEND);
         }
