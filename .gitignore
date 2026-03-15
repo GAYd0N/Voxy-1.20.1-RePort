@@ -5,15 +5,9 @@
 /run/
 /out/
 /logs/
-/.claude/
-/compat/
-/other/
-/docs/
-
 bin/
 .classpath
 .project
 *.launch
 .settings/
-
 .vscode/

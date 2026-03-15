@@ -14,6 +14,7 @@ public class BasicSectionGeometryData implements IGeometryData {
     public static final int SECTION_METADATA_SIZE = 32;
     private final GlBuffer sectionMetadataBuffer;
     private final GlBuffer geometryBuffer;
+    public final boolean isExternalGeometryBuffer;
 
     private final int maxSectionCount;
     private int currentSectionCount;
@@ -21,6 +22,7 @@ public class BasicSectionGeometryData implements IGeometryData {
     public BasicSectionGeometryData(int maxSectionCount, long geometryCapacity) {
         this.maxSectionCount = maxSectionCount;
         this.sectionMetadataBuffer = new GlBuffer((long) maxSectionCount * SECTION_METADATA_SIZE);
+        this.isExternalGeometryBuffer = false;
         //8 Cause a quad is 8 bytes
         if ((geometryCapacity%8)!=0) {
             throw new IllegalStateException();
@@ -64,12 +66,20 @@ public class BasicSectionGeometryData implements IGeometryData {
         Logger.info("Successfully allocated the geometry buffer in " + delta + "ms");
     }
 
+    public BasicSectionGeometryData(int maxSectionCount, GlBuffer geometryBuffer) {
+        this.maxSectionCount = maxSectionCount;
+        this.sectionMetadataBuffer = new GlBuffer((long) maxSectionCount * SECTION_METADATA_SIZE);
+        this.geometryBuffer = geometryBuffer;
+        this.isExternalGeometryBuffer = true;
+    }
+
     private long sparseCommitment = 0;//Tracks the current range of the allocated sparse buffer
     public void ensureAccessable(int maxElementAccess) {
+        if (this.isExternalGeometryBuffer) return;
         long size = (Integer.toUnsignedLong(maxElementAccess)*8L+65535L)&~65535L;
         //If we are a sparse buffer, ensure the memory upto the requested size is allocated
         if (this.geometryBuffer.isSparse()) {
-            if (this.sparseCommitment < size) {//if we try to access memory outside the allocation range, allocate it
+            if (this.sparseCommitment < size) {//if we try to access memory outside the allocation range, allocate it        
                 glBindBuffer(GL_ARRAY_BUFFER, this.geometryBuffer.id);
                 size += 65536L*1024;//increase size by 64mb to prevent driver allocation thrashing
                 glBufferPageCommitmentARB(GL_ARRAY_BUFFER, this.sparseCommitment, size-this.sparseCommitment, true);
@@ -80,6 +90,7 @@ public class BasicSectionGeometryData implements IGeometryData {
     }
 
     public void trimCommitment(long highWaterMarkElements) {
+        if (this.isExternalGeometryBuffer) return;
         if (!this.geometryBuffer.isSparse()) return;
         long size = (highWaterMarkElements * 8L + 65535L) & ~65535L;
         // If we are significantly over-committed (e.g., by more than 128MB), de-commit some memory
@@ -119,9 +130,15 @@ public class BasicSectionGeometryData implements IGeometryData {
         return this.geometryBuffer.size();
     }
 
+    public long getMaxCapacity() {
+        return this.geometryBuffer.size();
+    }
+
     @Override
     public void free() {
         this.sectionMetadataBuffer.free();
+
+        if (this.isExternalGeometryBuffer) return;
 
         long gpuMemory = 0;
         if (Capabilities.INSTANCE.canQueryGpuMemory) {
@@ -153,9 +170,10 @@ public class BasicSectionGeometryData implements IGeometryData {
                     if (Capabilities.INSTANCE.getFreeDedicatedGpuMemory() - gpuMemory > releaseSize) break;
                 }
                 if (Capabilities.INSTANCE.getFreeDedicatedGpuMemory() - gpuMemory <= releaseSize) {
-                    Logger.warn("Failed to wait for gpu memory to be freed, this could indicate an issue with the driver");
+                    Logger.warn("Failed to wait for gpu memory to be freed, this could indicate an issue with the driver");  
                 }
             }
         }
     }
 }
+

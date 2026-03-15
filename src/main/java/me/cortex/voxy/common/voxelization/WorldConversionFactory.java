@@ -24,12 +24,14 @@ public class WorldConversionFactory {
     private static final boolean CANARY_INSTALLED = FabricLoader.getInstance().isModLoaded("canary");
 
     private static final class Cache {
-        private final int[] biomeCache = new int[4*4*4];
+        private final int[] biomeCache = new int[4 * 4 * 4];
         private final WeakHashMap<Mapper, Reference2IntOpenHashMap<BlockState>> localMapping = new WeakHashMap<>();
         private int[] paletteCache = new int[1024];
+
         private Reference2IntOpenHashMap<BlockState> getLocalMapping(Mapper mapper) {
-            return this.localMapping.computeIfAbsent(mapper, (a_)->new Reference2IntOpenHashMap<>());
+            return this.localMapping.computeIfAbsent(mapper, (a_) -> new Reference2IntOpenHashMap<>());
         }
+
         private int[] getPaletteCache(int size) {
             if (this.paletteCache.length < size) {
                 this.paletteCache = new int[size];
@@ -38,15 +40,18 @@ public class WorldConversionFactory {
         }
     }
 
-    //TODO: create a mapping for world/mapper -> local mapping
     private static final ThreadLocal<Cache> THREAD_LOCAL = ThreadLocal.withInitial(Cache::new);
 
-    private static boolean setupLithiumLocalPallet(Palette<BlockState> vp, Reference2IntOpenHashMap<BlockState> blockCache, Mapper mapper, int[] pc)  {
+    private static boolean setupLithiumLocalPallet(Palette<BlockState> vp,
+            Reference2IntOpenHashMap<BlockState> blockCache, Mapper mapper, int[] pc) {
         if (vp instanceof LithiumHashPalette<BlockState>) {
             for (int i = 0; i < vp.getSize(); i++) {
                 BlockState state = null;
                 int blockId = -1;
-                try { state = vp.valueFor(i); } catch (Exception e) {}
+                try {
+                    state = vp.valueFor(i);
+                } catch (Exception e) {
+                }
                 if (state != null) {
                     blockId = blockCache.getOrDefault(state, -1);
                     if (blockId == -1) {
@@ -61,14 +66,17 @@ public class WorldConversionFactory {
         return false;
     }
 
-    // 支持Canary MOD
-    private static boolean setupCanaryLocalPallet(Palette<BlockState> vp, Reference2IntOpenHashMap<BlockState> blockCache, Mapper mapper, int[] pc) {
+    private static boolean setupCanaryLocalPallet(Palette<BlockState> vp,
+            Reference2IntOpenHashMap<BlockState> blockCache, Mapper mapper, int[] pc) {
         String className = vp.getClass().getName();
         if (className.contains("canary") && className.contains("HashPalette")) {
             for (int i = 0; i < vp.getSize(); i++) {
                 BlockState state = null;
                 int blockId = -1;
-                try { state = vp.valueFor(i); } catch (Exception e) {}
+                try {
+                    state = vp.valueFor(i);
+                } catch (Exception e) {
+                }
                 if (state != null) {
                     blockId = blockCache.getOrDefault(state, -1);
                     if (blockId == -1) {
@@ -82,7 +90,9 @@ public class WorldConversionFactory {
         }
         return false;
     }
-    private static void setupLocalPalette(Palette<BlockState> vp, Reference2IntOpenHashMap<BlockState> blockCache, Mapper mapper, int[] pc) {
+
+    private static void setupLocalPalette(Palette<BlockState> vp, Reference2IntOpenHashMap<BlockState> blockCache,
+            Mapper mapper, int[] pc) {
         if (vp instanceof LinearPalette<BlockState>) {
             for (int i = 0; i < vp.getSize(); i++) {
                 var state = vp.valueFor(i);
@@ -96,14 +106,14 @@ public class WorldConversionFactory {
                 }
                 pc[i] = blockId;
             }
-        } else if (vp instanceof HashMapPalette<BlockState> pal) {
-            //var map = pal.map;
-            //TODO: heavily optimize this by reading the map directly
-
+        } else if (vp instanceof HashMapPalette<BlockState>) {
             for (int i = 0; i < vp.getSize(); i++) {
                 BlockState state = null;
                 int blockId = -1;
-                try { state = vp.valueFor(i); } catch (Exception e) {}
+                try {
+                    state = vp.valueFor(i);
+                } catch (Exception e) {
+                }
                 if (state != null) {
                     blockId = blockCache.getOrDefault(state, -1);
                     if (blockId == -1) {
@@ -113,7 +123,6 @@ public class WorldConversionFactory {
                 }
                 pc[i] = blockId;
             }
-
         } else if (vp instanceof SingleValuePalette<BlockState>) {
             int blockId = -1;
             var state = vp.valueFor(0);
@@ -126,7 +135,6 @@ public class WorldConversionFactory {
             }
             pc[0] = blockId;
         } else {
-            // 尝试Lithium调色板
             boolean handled = LITHIUM_INSTALLED && setupLithiumLocalPallet(vp, blockCache, mapper, pc);
             if (!handled) {
                 handled = CANARY_INSTALLED && setupCanaryLocalPallet(vp, blockCache, mapper, pc);
@@ -134,21 +142,18 @@ public class WorldConversionFactory {
             if (!handled) {
                 handled = setupCanaryLocalPallet(vp, blockCache, mapper, pc);
             }
-            // 实在处理不了算了喵
             if (!handled) {
-                throw new IllegalStateException("Unknown palette type: " + vp + " (class: " + vp.getClass().getName() + ")");
+                throw new IllegalStateException(
+                        "Unknown palette type: " + vp + " (class: " + vp.getClass().getName() + ")");
             }
         }
     }
 
     public static VoxelizedSection convert(VoxelizedSection section,
-                                           Mapper stateMapper,
-                                           PalettedContainer<BlockState> blockContainer,
-                                           PalettedContainerRO<Holder<Biome>> biomeContainer,
-                                           ILightingSupplier lightSupplier) {
-
-        //Cheat by creating a local pallet then read the data directly
-
+            Mapper stateMapper,
+            PalettedContainer<BlockState> blockContainer,
+            PalettedContainerRO<Holder<Biome>> biomeContainer,
+            ILightingSupplier lightSupplier) {
 
         var cache = THREAD_LOCAL.get();
         var blockCache = cache.getLocalMapping(stateMapper);
@@ -156,16 +161,7 @@ public class WorldConversionFactory {
         var biomes = cache.biomeCache;
         var data = section.section;
 
-        var vp = blockContainer.data.palette;
-        var pc = cache.getPaletteCache(vp.getSize());
-        GlobalPalette<BlockState> bps = null;
-
-        if (blockContainer.data.palette instanceof GlobalPalette<BlockState> _bps) {
-            bps = _bps;
-        } else {
-            setupLocalPalette(vp, blockCache, stateMapper, pc);
-        }
-
+        // 预计算生物群系映射
         {
             int i = 0;
             for (int y = 0; y < 4; y++) {
@@ -177,6 +173,25 @@ public class WorldConversionFactory {
             }
         }
 
+        // 处理空区块（只有空气）
+        if (blockContainer == null) {
+            for (int i = 0; i <= 0xFFF; i++) {
+                byte light = lightSupplier.supply(i & 0xF, (i >> 8) & 0xF, (i >> 4) & 0xF);
+                data[i] = Mapper.airWithLight(light);
+            }
+            section.lvl0NonAirCount = 0;
+            return section;
+        }
+
+        var vp = blockContainer.data.palette;
+        var pc = cache.getPaletteCache(vp.getSize());
+        GlobalPalette<BlockState> bps = null;
+
+        if (blockContainer.data.palette instanceof GlobalPalette<BlockState> _bps) {
+            bps = _bps;
+        } else {
+            setupLocalPalette(vp, blockCache, stateMapper, pc);
+        }
 
         int nonZeroCnt = 0;
         if (blockContainer.data.storage instanceof SimpleBitStorage bStor) {
@@ -198,28 +213,28 @@ public class WorldConversionFactory {
                 if (bps == null) {
                     bId = pc[(int) (sample & MSK)];
                 } else {
-                    bId = stateMapper.getIdForBlockState(bps.valueFor((int) (sample&MSK)));
+                    bId = stateMapper.getIdForBlockState(bps.valueFor((int) (sample & MSK)));
                 }
                 sample >>>= eBits;
 
-                byte light = lightSupplier.supply(i&0xF, (i>>8)&0xF, (i>>4)&0xF);
-                nonZeroCnt += (bId != 0)?1:0;
-                data[i] = Mapper.composeMappingId(light, bId, biomes[Integer.compress(i,0b1100_1100_1100)]);
+                byte light = lightSupplier.supply(i & 0xF, (i >> 8) & 0xF, (i >> 4) & 0xF);
+                nonZeroCnt += (bId != 0) ? 1 : 0;
+                data[i] = Mapper.composeMappingId(light, bId, biomes[Integer.compress(i, 0b1100_1100_1100)]);
             }
         } else {
             if (!(blockContainer.data.storage instanceof ZeroBitStorage)) {
                 throw new IllegalStateException();
             }
             int bId = pc[0];
-            if (bId == 0) {//Its air
+            if (bId == 0) {
                 for (int i = 0; i <= 0xFFF; i++) {
-                    data[i] = Mapper.airWithLight(lightSupplier.supply(i&0xF, (i>>8)&0xF, (i>>4)&0xF));
+                    data[i] = Mapper.airWithLight(lightSupplier.supply(i & 0xF, (i >> 8) & 0xF, (i >> 4) & 0xF));
                 }
             } else {
                 nonZeroCnt = 4096;
                 for (int i = 0; i <= 0xFFF; i++) {
-                    byte light = lightSupplier.supply(i&0xF, (i>>8)&0xF, (i>>4)&0xF);
-                    data[i] = Mapper.composeMappingId(light, bId, biomes[Integer.compress(i,0b1100_1100_1100)]);
+                    byte light = lightSupplier.supply(i & 0xF, (i >> 8) & 0xF, (i >> 4) & 0xF);
+                    data[i] = Mapper.composeMappingId(light, bId, biomes[Integer.compress(i, 0b1100_1100_1100)]);
                 }
             }
         }
@@ -227,82 +242,72 @@ public class WorldConversionFactory {
         return section;
     }
 
-
-
-
-
-
-
-
-
     private static int G(int x, int y, int z) {
-        return ((y<<8)|(z<<4)|x);
+        return ((y << 8) | (z << 4) | x);
     }
 
     private static int H(int x, int y, int z) {
-        return ((y<<6)|(z<<3)|x) + 16*16*16;
+        return ((y << 6) | (z << 3) | x) + 16 * 16 * 16;
     }
 
     private static int I(int x, int y, int z) {
-        return ((y<<4)|(z<<2)|x) + 8*8*8 + 16*16*16;
+        return ((y << 4) | (z << 2) | x) + 8 * 8 * 8 + 16 * 16 * 16;
     }
 
     private static int J(int x, int y, int z) {
-        return ((y<<2)|(z<<1)|x) + 4*4*4 + 8*8*8 + 16*16*16;
+        return ((y << 2) | (z << 1) | x) + 4 * 4 * 4 + 8 * 8 * 8 + 16 * 16 * 16;
     }
 
     public static void mipSection(VoxelizedSection section, Mapper mapper) {
         var data = section.section;
 
-        //Mip L1
+        // Mip L1
         int i = 0;
         int MSK = 0b1110_1110_1110;
-        int iMSK1 = (~MSK)+1;
+        int iMSK1 = (~MSK) + 1;
         int q = 0;
         while (true) {
-            data[16*16*16 + i++] = Mipper.mip(
-                    data[q|G(0,0,0)], data[q|G(1,0,0)], data[q|G(0,0,1)], data[q|G(1,0,1)],
-                    data[q|G(0,1,0)], data[q|G(1,1,0)], data[q|G(0,1,1)], data[q|G(1,1,1)],
-                    mapper
-            );
+            data[16 * 16 * 16 + i++] = Mipper.mip(
+                    data[q | G(0, 0, 0)], data[q | G(1, 0, 0)], data[q | G(0, 0, 1)], data[q | G(1, 0, 1)],
+                    data[q | G(0, 1, 0)], data[q | G(1, 1, 0)], data[q | G(0, 1, 1)], data[q | G(1, 1, 1)],
+                    mapper);
             if (q == MSK)
                 break;
-            q = (q+iMSK1)&MSK;
+            q = (q + iMSK1) & MSK;
         }
 
-        //Mip L2
+        // Mip L2
         i = 0;
-        for (int y = 0; y < 8; y+=2) {
+        for (int y = 0; y < 8; y += 2) {
             for (int z = 0; z < 8; z += 2) {
                 for (int x = 0; x < 8; x += 2) {
-                    data[16*16*16 + 8*8*8 + i++] =
-                            Mipper.mip(
-                                    data[H(x, y, z)],       data[H(x+1, y, z)],       data[H(x, y, z+1)],      data[H(x+1, y, z+1)],
-                                    data[H(x, y+1, z)],  data[H(x+1, y+1, z)],  data[H(x, y+1, z+1)], data[H(x+1, y+1, z+1)],
-                                    mapper);
+                    data[16 * 16 * 16 + 8 * 8 * 8 + i++] = Mipper.mip(
+                            data[H(x, y, z)], data[H(x + 1, y, z)], data[H(x, y, z + 1)], data[H(x + 1, y, z + 1)],
+                            data[H(x, y + 1, z)], data[H(x + 1, y + 1, z)], data[H(x, y + 1, z + 1)],
+                            data[H(x + 1, y + 1, z + 1)],
+                            mapper);
                 }
             }
         }
 
-        //Mip L3
+        // Mip L3
         i = 0;
-        for (int y = 0; y < 4; y+=2) {
+        for (int y = 0; y < 4; y += 2) {
             for (int z = 0; z < 4; z += 2) {
                 for (int x = 0; x < 4; x += 2) {
-                    data[16*16*16 + 8*8*8 + 4*4*4 + i++] =
-                            Mipper.mip(
-                                    data[I(x, y, z)],       data[I(x+1, y, z)],       data[I(x, y, z+1)],      data[I(x+1, y, z+1)],
-                                    data[I(x, y+1, z)],   data[I(x+1, y+1, z)],  data[I(x, y+1, z+1)], data[I(x+1, y+1, z+1)],
-                                    mapper);
+                    data[16 * 16 * 16 + 8 * 8 * 8 + 4 * 4 * 4 + i++] = Mipper.mip(
+                            data[I(x, y, z)], data[I(x + 1, y, z)], data[I(x, y, z + 1)], data[I(x + 1, y, z + 1)],
+                            data[I(x, y + 1, z)], data[I(x + 1, y + 1, z)], data[I(x, y + 1, z + 1)],
+                            data[I(x + 1, y + 1, z + 1)],
+                            mapper);
                 }
             }
         }
 
-        //Mip L4
-        data[16*16*16 + 8*8*8 + 4*4*4 + 2*2*2] =
-                Mipper.mip(
-                        data[J(0, 0, 0)], data[J(1, 0, 0)], data[J(0, 0, 1)], data[J(1, 0, 1)],
-                        data[J(0, 1, 0)], data[J(1, 1, 0)], data[J(0, 1, 1)], data[J(1, 1, 1)],
-                        mapper);
+        // Mip L4
+        data[16 * 16 * 16 + 8 * 8 * 8 + 4 * 4 * 4 + 2 * 2 * 2] = Mipper.mip(
+                data[J(0, 0, 0)], data[J(1, 0, 0)], data[J(0, 0, 1)], data[J(1, 0, 1)],
+                data[J(0, 1, 0)], data[J(1, 1, 0)], data[J(0, 1, 1)], data[J(1, 1, 1)],
+                mapper);
     }
 }

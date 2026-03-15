@@ -2,6 +2,8 @@ package me.cortex.voxy.client.core.model;
 
 import me.jellysquid.mods.sodium.client.util.color.ColorSRGB;
 
+import java.util.Arrays;
+
 public class TextureUtils {
     //Returns the number of non pixels not written to
     public static int getWrittenPixelCount(ColourDepthTextureData texture, int checkMode) {
@@ -132,6 +134,23 @@ public class TextureUtils {
         return depthF;
     }
 
+
+    public static long[] generateMask(ColourDepthTextureData data, int checkMode) {
+        return generateMask(data, checkMode, new long[data.width()*data.height()/64]);
+    }
+    public static long[] generateMask(ColourDepthTextureData data, int checkMode, long[] outMsk) {
+        Arrays.fill(outMsk, 0);
+        int i = 0;
+        for (int y = 0; y < data.height(); y++) {
+            for (int x = 0; x < data.width(); x++) {
+                if (wasPixelWritten(data, checkMode, i)) {
+                    outMsk[i/64] |= 1L << (i&63);
+                }
+                i++;
+            }
+        }
+        return outMsk;
+    }
 
     //NOTE: data goes from bottom left to top right (x first then y)
     public static int[] computeBounds(ColourDepthTextureData data, int checkMode) {

@@ -43,26 +43,28 @@ public class SectionSavingService {
         }
     }*/
 
-    public void enqueueSave(WorldEngine in, WorldSection section) {
+    public void enqueueSave(WorldEngine in, WorldSection section, boolean nonBlocking) {
         //If its not enqueued for saving then enqueue it
         if (section.exchangeIsInSaveQueue(true)) {
             //Acquire the section for use
             section.acquire();
 
-            //Hard limit the save count to prevent OOM
-            if (this.getTaskCount() > 5_000) {
-                //wait a bit
-                try {
-                    Thread.sleep(10);
-                } catch (InterruptedException e) {
-                    throw new RuntimeException(e);
-                }
-                //If we are still full, process entries in the queue ourselves instead of waiting for the service
-                while (this.getTaskCount() > 5_000 && this.service.isLive()) {
-                    if (!this.service.steal()) {
-                        break;
+            if (!nonBlocking) {
+                //Hard limit the save count to prevent OOM
+                if (this.getTaskCount() > 5_000) {
+                    //wait a bit
+                    try {
+                        Thread.sleep(10);
+                    } catch (InterruptedException e) {
+                        throw new RuntimeException(e);
                     }
-                    this.processJob();
+                    //If we are still full, process entries in the queue ourselves instead of waiting for the service
+                    while (this.getTaskCount() > 5_000 && this.service.isLive()) {
+                        if (!this.service.steal()) {
+                            break;
+                        }
+                        this.processJob();
+                    }
                 }
             }
 

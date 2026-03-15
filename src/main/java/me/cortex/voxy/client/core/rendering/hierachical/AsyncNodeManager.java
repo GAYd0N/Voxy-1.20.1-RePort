@@ -62,6 +62,7 @@ public class AsyncNodeManager {
     public final int maxNodeCount;
     private final long geometryCapacity;
     private volatile boolean running = true;
+    private volatile Throwable uncaughtException;
 
     private final NodeManager manager;
     private final BasicAsyncGeometryManager geometryManager;
@@ -100,7 +101,15 @@ public class AsyncNodeManager {
                 }
             } catch (Exception e) {
                 Logger.error("Critical error occurred in async processor, things will be broken", e);
+                throw e;
             }
+        });
+        this.thread.setUncaughtExceptionHandler((t,e)->{
+            this.running = false;
+            if (e == null) {
+                e = new RuntimeException("null throwable");
+            }
+            this.uncaughtException = e;
         });
         this.thread.setName("Async Node Manager");
 
@@ -251,12 +260,16 @@ public class AsyncNodeManager {
 
         //Limit uploading as well as by geometry capacity being available
         // must have 50 mb of free geometry space to upload
-        for (int limit = 0; limit < 200 && ((this.geometryCapacity-this.geometryManager.getGeometryUsedBytes())>50_000_000L); limit++) {
+        long estimatedGeometryUploadAmount = 0;
+        for (int limit = 0; limit < 200 && ((this.geometryCapacity-this.geometryManager.getGeometryUsedBytes())>50_000_000L) && estimatedGeometryUploadAmount<1_000L<<10; limit++) {
             var job = this.geometryUpdateQueue.poll();
             if (job == null)
                 break;
             workDone++;
             this.manager.processGeometryResult(job);
+            if (job.geometryBuffer!=null) {
+                estimatedGeometryUploadAmount += job.geometryBuffer.size;
+            }
         }
 
         while (true) {//Process all request batches
@@ -494,6 +507,9 @@ public class AsyncNodeManager {
     private IntConsumer tlnAddCallback; private IntConsumer tlnRemoveCallback;
     //Render thread synchronization
     public void tick(GlBuffer nodeBuffer, NodeCleaner cleaner) {//TODO: dont pass nodeBuffer here??, do something else thats better
+        if (this.uncaughtException != null) {
+            throw new RuntimeException(this.uncaughtException);//Propagate internal exception
+        }
         var results = (SyncResults)RESULT_HANDLE.getAndSet(this, null);//Acquire the results
         if (results == null) {//There are no new results to process, return
             return;
@@ -525,15 +541,17 @@ public class AsyncNodeManager {
                 TimingStatistics.A.start();
 
                 int copies = upload.dataUploadPoints.size();
+                int upCopies = (copies*16 + 15) & ~15;// Align to 16 bytes. equivalent to alignUpAlloc(copies*16)
                 int scratchSize = (int) upload.arena.getSize() * 8;
-                long ptr = UploadStream.INSTANCE.rawUploadAddress(scratchSize + copies * 16);
+                int upScratchSize = (scratchSize + 15) & ~15;
+                long ptr = UploadStream.INSTANCE.rawUploadAddress(upScratchSize + upCopies);
                 UnsafeUtil.memcpy(upload.scratchHeaderBuffer.address, UploadStream.INSTANCE.getBaseAddress() + ptr, copies * 16L);
-                UnsafeUtil.memcpy(upload.scratchDataBuffer.address, UploadStream.INSTANCE.getBaseAddress() + ptr + copies * 16L, scratchSize);
+                UnsafeUtil.memcpy(upload.scratchDataBuffer.address, UploadStream.INSTANCE.getBaseAddress() + ptr + upCopies, scratchSize);
                 UploadStream.INSTANCE.commit();//Commit the buffer
 
                 this.multiMemcpy.bind();
-                glBindBufferRange(GL_SHADER_STORAGE_BUFFER, 0, UploadStream.INSTANCE.getRawBufferId(), ptr, copies*16L);
-                glBindBufferRange(GL_SHADER_STORAGE_BUFFER, 1, UploadStream.INSTANCE.getRawBufferId(), ptr+copies*16L, scratchSize);
+                glBindBufferRange(GL_SHADER_STORAGE_BUFFER, 0, UploadStream.INSTANCE.getRawBufferId(), ptr, upCopies);
+                glBindBufferRange(GL_SHADER_STORAGE_BUFFER, 1, UploadStream.INSTANCE.getRawBufferId(), ptr+upCopies, upScratchSize);
                 glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 2, ((BasicSectionGeometryData) this.geometryData).getGeometryBuffer().id);
 
                 if (copies > 500) {
