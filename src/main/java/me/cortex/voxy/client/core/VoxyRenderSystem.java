@@ -51,6 +51,10 @@ import static org.lwjgl.opengl.GL43.GL_SHADER_STORAGE_BUFFER;
 import static org.lwjgl.opengl.GL43C.GL_SHADER_STORAGE_BUFFER_BINDING;
 
 public class VoxyRenderSystem {
+    // This prepass writes a depth bound buffer used for conservative occlusion.
+    // In heavily mixed Embeddium/Oculus modpacks it can over-cull vertical stacks.
+    // Default to disabled for correctness; can be re-enabled with -Dvoxy.disableChunkBoundPrepass=false.
+    private static final boolean DISABLE_CHUNK_BOUND_PREPASS = Boolean.parseBoolean(System.getProperty("voxy.disableChunkBoundPrepass", "true"));
     private final WorldEngine worldIn;
 
 
@@ -255,7 +259,7 @@ public class VoxyRenderSystem {
         this.pipeline.preSetup(viewport);
 
         TimingStatistics.E.start();
-        if ((!VoxyClient.disableSodiumChunkRender())&&!IrisUtil.irisShadowActive()) {
+        if ((!VoxyClient.disableSodiumChunkRender())&&!IrisUtil.irisShadowActive() && !DISABLE_CHUNK_BOUND_PREPASS) {
             this.chunkBoundRenderer.render(viewport);
         } else {
             viewport.depthBoundingBuffer.clear(0);

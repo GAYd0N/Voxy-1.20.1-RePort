@@ -142,12 +142,37 @@ public class WorldConversionFactory {
         }
     }
 
+    private static int unpackLightNibble(byte[] packedLight, int index) {
+        if (packedLight == null) {
+            return 0;
+        }
+        int packed = packedLight[index >> 1] & 0xFF;
+        return (index & 1) == 0 ? (packed & 0xF) : (packed >> 4);
+    }
+
+    private static byte sampleLight(ILightingSupplier lightSupplier, byte[] blockLight, byte[] skyLight, boolean useArrayLight, int index) {
+        if (useArrayLight) {
+            int block = unpackLightNibble(blockLight, index);
+            int sky = unpackLightNibble(skyLight, index);
+            return (byte) (sky | (block << 4));
+        }
+        if (lightSupplier == null) {
+            return 0;
+        }
+        int x = index & 0xF;
+        int y = (index >> 8) & 0xF;
+        int z = (index >> 4) & 0xF;
+        return lightSupplier.supply(x, y, z);
+    }
+
     public static VoxelizedSection convert(VoxelizedSection section,
                                            Mapper stateMapper,
                                            PalettedContainer<BlockState> blockContainer,
                                            PalettedContainerRO<Holder<Biome>> biomeContainer,
-                                           byte[] blockLight,
-                                           byte[] skyLight) {
+                                           ILightingSupplier lightSupplier) {
+        byte[] blockLight = lightSupplier == null ? null : lightSupplier.getBlockLight();
+        byte[] skyLight = lightSupplier == null ? null : lightSupplier.getSkyLight();
+        boolean useArrayLight = blockLight != null || skyLight != null;
 
         //Cheat by creating a local pallet then read the data directly
         var cache = THREAD_LOCAL.get();
@@ -169,19 +194,7 @@ public class WorldConversionFactory {
 
         if (blockContainer == null) {
             for (int i = 0; i <= 0xFFF; i++) {
-                int idx = i >> 1;
-                boolean shift = (i & 1) != 0;
-                int sky = 0;
-                if (skyLight != null) {
-                    int b = skyLight[idx] & 0xFF;
-                    sky = shift ? (b >> 4) : (b & 0xF);
-                }
-                int block = 0;
-                if (blockLight != null) {
-                    int b = blockLight[idx] & 0xFF;
-                    block = shift ? (b >> 4) : (b & 0xF);
-                }
-                data[i] = Mapper.airWithLight((byte) (sky | (block << 4)));
+                data[i] = Mapper.airWithLight(sampleLight(lightSupplier, blockLight, skyLight, useArrayLight, i));
             }
             section.lvl0NonAirCount = 0;
             return section;
@@ -226,19 +239,7 @@ public class WorldConversionFactory {
                 }
                 sample >>>= eBits;
 
-                int idx = i >> 1;
-                boolean shift = (i & 1) != 0;
-                int sky = 0;
-                if (skyLight != null) {
-                    int b = skyLight[idx] & 0xFF;
-                    sky = shift ? (b >> 4) : (b & 0xF);
-                }
-                int block = 0;
-                if (blockLight != null) {
-                    int b = blockLight[idx] & 0xFF;
-                    block = shift ? (b >> 4) : (b & 0xF);
-                }
-                byte light = (byte) (sky | (block << 4));
+                byte light = sampleLight(lightSupplier, blockLight, skyLight, useArrayLight, i);
 
                 nonZeroCnt += (bId != 0)?1:0;
                 data[i] = Mapper.composeMappingId(light, bId, biomes[ExpansionUtil.compress(i,0b1100_1100_1100)]);
@@ -250,36 +251,12 @@ public class WorldConversionFactory {
             int bId = pc[0];
             if (bId == 0) {//Its air
                 for (int i = 0; i <= 0xFFF; i++) {
-                    int idx = i >> 1;
-                    boolean shift = (i & 1) != 0;
-                    int sky = 0;
-                    if (skyLight != null) {
-                        int b = skyLight[idx] & 0xFF;
-                        sky = shift ? (b >> 4) : (b & 0xF);
-                    }
-                    int block = 0;
-                    if (blockLight != null) {
-                        int b = blockLight[idx] & 0xFF;
-                        block = shift ? (b >> 4) : (b & 0xF);
-                    }
-                    data[i] = Mapper.airWithLight((byte) (sky | (block << 4)));
+                    data[i] = Mapper.airWithLight(sampleLight(lightSupplier, blockLight, skyLight, useArrayLight, i));
                 }
             } else {
                 nonZeroCnt = 4096;
                 for (int i = 0; i <= 0xFFF; i++) {
-                    int idx = i >> 1;
-                    boolean shift = (i & 1) != 0;
-                    int sky = 0;
-                    if (skyLight != null) {
-                        int b = skyLight[idx] & 0xFF;
-                        sky = shift ? (b >> 4) : (b & 0xF);
-                    }
-                    int block = 0;
-                    if (blockLight != null) {
-                        int b = blockLight[idx] & 0xFF;
-                        block = shift ? (b >> 4) : (b & 0xF);
-                    }
-                    byte light = (byte) (sky | (block << 4));
+                    byte light = sampleLight(lightSupplier, blockLight, skyLight, useArrayLight, i);
                     data[i] = Mapper.composeMappingId(light, bId, biomes[ExpansionUtil.compress(i,0b1100_1100_1100)]);
                 }
             }

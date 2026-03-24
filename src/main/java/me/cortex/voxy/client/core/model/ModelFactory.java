@@ -5,14 +5,17 @@ import it.unimi.dsi.fastutil.objects.Object2IntMap;
 import it.unimi.dsi.fastutil.objects.Object2IntOpenHashMap;
 import it.unimi.dsi.fastutil.objects.ObjectOpenHashSet;
 import it.unimi.dsi.fastutil.objects.ObjectSet;
+import me.cortex.voxy.client.core.IGetVoxyRenderSystem;
 import me.cortex.voxy.client.core.gl.GlBuffer;
 import me.cortex.voxy.client.core.gl.GlTexture;
+import me.cortex.voxy.client.core.model.bakery.ModelTextureBakery;
 import me.cortex.voxy.client.core.model.bakery.SoftwareModelTextureBakery;
 import me.cortex.voxy.client.core.rendering.util.UploadStream;
 import me.cortex.voxy.common.Logger;
 import me.cortex.voxy.common.util.MemoryBuffer;
 import me.cortex.voxy.common.util.Pair;
 import me.cortex.voxy.common.world.other.Mapper;
+import com.mojang.blaze3d.systems.RenderSystem;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.color.block.BlockColor;
 import net.minecraft.client.renderer.ItemBlockRenderTypes;
@@ -39,10 +42,18 @@ import net.minecraft.world.level.material.FluidState;
 import org.jetbrains.annotations.Nullable;
 import org.lwjgl.system.MemoryUtil;
 
+import java.lang.invoke.MethodHandle;
+import java.lang.invoke.MethodHandles;
 import java.lang.invoke.VarHandle;
 import java.lang.reflect.Field;
+import java.lang.reflect.Method;
 import java.util.*;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentLinkedDeque;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.locks.ReentrantLock;
 
 import static me.cortex.voxy.client.core.model.ModelStore.MODEL_SIZE;
@@ -75,8 +86,12 @@ public class ModelFactory {
 
     private final Biome DEFAULT_BIOME = Minecraft.getInstance().level.registryAccess().lookupOrThrow(Registries.BIOME).getOrThrow(Biomes.PLAINS).value();
 
+    public final ModelTextureBakery bakery;
     public final SoftwareModelTextureBakery bakery2;
     private final long bakeScratchBuffer = MemoryUtil.nmemAlloc(MODEL_TEXTURE_SIZE*MODEL_TEXTURE_SIZE*8*6);
+    private static final int ECLIPTIC_REMAPPED_BLOCK_ID_MAX = 0xFFFFF;
+    private static final long SNOWY_RENDER_DISPATCH_TIMEOUT_SECONDS = 5L;
+    private static final AtomicBoolean SNOWY_RELOAD_SCHEDULED = new AtomicBoolean(false);
 
 
     //Model data might also contain a constant colour if the colour resolver produces a constant colour, this saves space in the
@@ -125,6 +140,8 @@ public class ModelFactory {
 
     private final Mapper mapper;
     private final ModelStore storage;
+    private final @Nullable MethodHandle setSnowyBlockHandle;
+    private final AtomicBoolean snowyBridgeFailureLogged = new AtomicBoolean(false);
 
     private final ConcurrentLinkedDeque<BlockBake> bakeQueue = new ConcurrentLinkedDeque<>();
 
@@ -155,7 +172,9 @@ public class ModelFactory {
         this.mapper = mapper;
         this.storage = storage;
         this.bakery2 = new SoftwareModelTextureBakery();
-        this.bakery2.setupTexture();
+        this.bakery = this.bakery2;
+        this.setSnowyBlockHandle = resolveSetSnowyBlockHandle(this.bakery);
+        this.bakery.setupTexture();
 
         this.metadataCache = new long[1<<16];
         this.fluidStateLUT = new int[1<<16];
@@ -244,7 +263,10 @@ public class ModelFactory {
         if (bake == null) return false;
         ColourDepthTextureData[] textureData = new ColourDepthTextureData[6];
 
-        int flags = this.bakery2.renderToOutput(bake.state, this.bakeScratchBuffer);
+        boolean shouldUseSnowyRenderBridge = this.setSnowyBlockHandle != null && this.isSnowyRemappedBlockId(bake.blockId);
+        int flags = shouldUseSnowyRenderBridge
+                ? this.renderSnowyModelOnRenderThread(bake.state)
+                : this.bakery2.renderToOutput(bake.state, this.bakeScratchBuffer);
 
         boolean hasDarkenedTextures = (flags&2)!=0;
         boolean isShaded = (flags&1)!=0;
@@ -277,6 +299,99 @@ public class ModelFactory {
             this.uploadResults.add(bakeResult);
         }
         return !this.bakeQueue.isEmpty();
+    }
+
+    private int renderSnowyModelOnRenderThread(BlockState state) {
+        if (RenderSystem.isOnRenderThread()) {
+            return this.renderSnowyModelAtomically(state);
+        }
+
+        CompletableFuture<Integer> renderResult = new CompletableFuture<>();
+        Minecraft.getInstance().execute(() -> {
+            try {
+                renderResult.complete(this.renderSnowyModelAtomically(state));
+            } catch (Throwable t) {
+                renderResult.completeExceptionally(t);
+            }
+        });
+
+        try {
+            return renderResult.get(SNOWY_RENDER_DISPATCH_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new RuntimeException("Interrupted while waiting for snowy remap bake on render thread", e);
+        } catch (TimeoutException e) {
+            throw new IllegalStateException("Timed out waiting for snowy remap bake on render thread after " + SNOWY_RENDER_DISPATCH_TIMEOUT_SECONDS + " seconds", e);
+        } catch (ExecutionException e) {
+            throw new RuntimeException("Snowy remap bake failed on render thread", e.getCause());
+        }
+    }
+
+    private int renderSnowyModelAtomically(BlockState state) {
+        if (!this.trySetSnowyBakingState(true)) {
+            throw new IllegalStateException("Failed to enable snowy baking state bridge for state: " + state);
+        }
+        this.scheduleSnowyRendererReloadOnce();
+        try {
+            return this.bakery.renderToOutput(state, this.bakeScratchBuffer);
+        } finally {
+            if (!this.trySetSnowyBakingState(false)) {
+                throw new IllegalStateException("Failed to reset snowy baking state bridge for state: " + state);
+            }
+        }
+    }
+
+    private static @Nullable MethodHandle resolveSetSnowyBlockHandle(ModelTextureBakery bakery) {
+        try {
+            Method method = bakery.getClass().getMethod("setSnowyBlock", boolean.class);
+            return MethodHandles.publicLookup().unreflect(method);
+        } catch (ReflectiveOperationException ignored) {
+            return null;
+        }
+    }
+
+    private boolean trySetSnowyBakingState(boolean snowy) {
+        if (this.setSnowyBlockHandle == null) {
+            return false;
+        }
+        try {
+            this.setSnowyBlockHandle.invoke(this.bakery, snowy);
+            return true;
+        } catch (Throwable t) {
+            if (this.snowyBridgeFailureLogged.compareAndSet(false, true)) {
+                Logger.warn("Failed to apply snowy baking state on ModelTextureBakery bridge", t);
+            }
+            return false;
+        }
+    }
+
+    private boolean isSnowyRemappedBlockId(int blockId) {
+        int blockStateCount = this.mapper.getBlockStateCount();
+        if (blockId < blockStateCount || blockId > ECLIPTIC_REMAPPED_BLOCK_ID_MAX) {
+            return false;
+        }
+        int remapped = ECLIPTIC_REMAPPED_BLOCK_ID_MAX - blockId;
+        return remapped >= 0 && remapped < blockStateCount;
+    }
+
+    private void scheduleSnowyRendererReloadOnce() {
+        if (!SNOWY_RELOAD_SCHEDULED.compareAndSet(false, true)) {
+            return;
+        }
+        Minecraft.getInstance().execute(() -> {
+            try {
+                var levelRenderer = Minecraft.getInstance().levelRenderer;
+                if (!(levelRenderer instanceof IGetVoxyRenderSystem renderSystem)) {
+                    Logger.warn("Skipping snowy compatibility renderer reload: levelRenderer missing Voxy interface");
+                    return;
+                }
+                renderSystem.shutdownRenderer();
+                renderSystem.createRenderer();
+                Logger.info("Triggered one-shot Voxy renderer rebuild for snowy LOD compatibility");
+            } catch (Throwable t) {
+                Logger.error("Failed to rebuild Voxy renderer for snowy LOD compatibility", t);
+            }
+        });
     }
 
     private final ConcurrentLinkedDeque<Mapper.BiomeEntry> biomeQueue = new ConcurrentLinkedDeque<>();
@@ -946,7 +1061,7 @@ public class ModelFactory {
 
 
     public void free() {
-        this.bakery2.free();
+        this.bakery.free();
         MemoryUtil.nmemFree(this.bakeScratchBuffer);
         while (!this.uploadResults.isEmpty()) {
             this.uploadResults.poll().free();

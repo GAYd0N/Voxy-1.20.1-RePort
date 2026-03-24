@@ -15,6 +15,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
 import java.util.function.Predicate;
+import java.util.regex.Pattern;
 
 import org.apache.commons.compress.archivers.zip.ZipArchiveEntry;
 import org.apache.commons.compress.archivers.zip.ZipFile;
@@ -28,6 +29,8 @@ import me.cortex.voxy.common.thread.ServiceManager;
 import me.cortex.voxy.common.util.MemoryBuffer;
 import me.cortex.voxy.common.util.Pair;
 import me.cortex.voxy.common.util.UnsafeUtil;
+import me.cortex.voxy.common.voxelization.ArrayLightingSupplier;
+import me.cortex.voxy.common.voxelization.ILightingSupplier;
 import me.cortex.voxy.common.voxelization.VoxelizedSection;
 import me.cortex.voxy.common.voxelization.WorldConversionFactory;
 import me.cortex.voxy.common.world.WorldEngine;
@@ -39,6 +42,7 @@ import net.minecraft.core.IdMap;
 import net.minecraft.core.registries.Registries;
 import net.minecraft.core.Registry;
 import net.minecraft.nbt.CompoundTag;
+import net.minecraft.nbt.ListTag;
 import net.minecraft.nbt.NbtIo;
 import net.minecraft.nbt.NbtOps;
 import net.minecraft.nbt.Tag;
@@ -57,6 +61,13 @@ import net.minecraft.world.level.chunk.PalettedContainerRO.PackedData;
 import net.minecraft.world.level.chunk.storage.RegionFileVersion;
 
 public class WorldImporter implements IDataImporter {
+    private static final int SECTION_STATE_ENTRY_COUNT = 16 * 16 * 16;
+    private static final Pattern REGION_FILE_NAME_PATTERN = Pattern.compile("^r\\.-?\\d+\\.-?\\d+\\.mca$");
+    private static final int COMPACT_BLOCK_STATES_LENGTH_5BIT = 320;
+    private static final int COMPACT_BLOCK_STATES_LENGTH_6BIT = 384;
+    private static final int RECOVERY_DETAIL_LOG_LIMIT = 8;
+    private static final int RECOVERY_SUMMARY_LOG_INTERVAL = 64;
+
     private final WorldEngine world;
     private final PalettedContainerRO<Holder<Biome>> defaultBiomeProvider;
     private final Codec<PalettedContainerRO<Holder<Biome>>> biomeCodec;
@@ -64,6 +75,7 @@ public class WorldImporter implements IDataImporter {
     private final AtomicInteger estimatedTotalChunks = new AtomicInteger();//Slowly converges to the true value
     private final AtomicInteger totalChunks = new AtomicInteger();
     private final AtomicInteger chunksProcessed = new AtomicInteger();
+    private final AtomicInteger recoveredCompactStorageCount = new AtomicInteger();
 
     private final ConcurrentLinkedDeque<Runnable> jobQueue = new ConcurrentLinkedDeque<>();
     private final Service service;
@@ -72,7 +84,7 @@ public class WorldImporter implements IDataImporter {
 
     public WorldImporter(WorldEngine worldEngine, Level mcWorld, ServiceManager sm, BooleanSupplier runChecker) {
         this.world = worldEngine;
-        this.service = sm.createService(()->new Pair<>(()->this.jobQueue.poll().run(), ()->{}), 3, "World importer", runChecker);
+        this.service = sm.createService(() -> new Pair<>(this::runQueuedJob, () -> {}), 3, "World importer", runChecker);
 
         var biomeRegistry = mcWorld.registryAccess().registryOrThrow(Registries.BIOME);
         var defaultBiome = biomeRegistry.getHolder(Biomes.PLAINS).orElseThrow();
@@ -162,9 +174,27 @@ public class WorldImporter implements IDataImporter {
             this.service.shutdown();
         }
         //Free all the remaining entries by running the lambda
-        while (!this.jobQueue.isEmpty()) {
-            this.jobQueue.poll().run();
+        Runnable job;
+        while ((job = this.jobQueue.poll()) != null) {
+            job.run();
         }
+    }
+
+    private void runQueuedJob() {
+        Runnable job = this.jobQueue.poll();
+        if (job != null) {
+            job.run();
+        }
+    }
+
+    private boolean shouldAbortImport() {
+        if (!this.isRunning || this.isShutdown.get()) {
+            return true;
+        }
+        if (!this.service.isLive() || !this.world.isLive()) {
+            return true;
+        }
+        return this.world.instanceIn != null && !this.world.instanceIn.isRunning();
     }
 
     private interface IImporterMethod <T> {
@@ -176,9 +206,10 @@ public class WorldImporter implements IDataImporter {
     private ICompletionCallback completionCallback;
     public void importRegionDirectoryAsync(File directory) {
         var files = directory.listFiles((dir, name) -> {
-            var sections = name.split("\\.");
-            if (sections.length != 4 || (!sections[0].equals("r")) || (!sections[3].equals("mca"))) {
-                Logger.error("Unknown file: " + name);
+            if (!isValidRegionFileName(name)) {
+                if (shouldLogUnknownRegionFile(name)) {
+                    Logger.warn("Skipping non-region file: " + name);
+                }
                 return false;
             }
             return true;
@@ -202,9 +233,10 @@ public class WorldImporter implements IDataImporter {
                 }
                 var parts = entry.getName().split("/");
                 var name = parts[parts.length-1];
-                var sections = name.split("\\.");
-                if (sections.length != 4 || (!sections[0].equals("r")) || (!sections[3].equals("mca"))) {
-                    Logger.error("Unknown file: " + name);
+                if (!isValidRegionFileName(name)) {
+                    if (shouldLogUnknownRegionFile(name)) {
+                        Logger.warn("Skipping non-region file in zip: " + name);
+                    }
                     continue;
                 }
                 regions.add(entry);
@@ -246,34 +278,44 @@ public class WorldImporter implements IDataImporter {
         this.worker = new Thread(() -> {
             this.estimatedTotalChunks.addAndGet(regionFiles.length*1024);
             for (var file : regionFiles) {
+                if (this.shouldAbortImport()) {
+                    this.finishWorkerEarly();
+                    return;
+                }
                 this.estimatedTotalChunks.addAndGet(-1024);
                 try {
                     importer.importRegion(file);
                 } catch (Exception e) {
                     throw new RuntimeException(e);
                 }
-                while ((this.totalChunks.get()-this.chunksProcessed.get() > 10_000) && this.isRunning) {
+                while ((this.totalChunks.get()-this.chunksProcessed.get() > 10_000) && !this.shouldAbortImport()) {
                     try {
                         Thread.sleep(1);
                     } catch (InterruptedException e) {
                         throw new RuntimeException(e);
                     }
                 }
-                if (!this.isRunning) {
-                    this.service.blockTillEmpty();
-                    this.completionCallback.onCompletion(this.totalChunks.get());
-                    this.worker = null;
+                if (this.shouldAbortImport()) {
+                    this.finishWorkerEarly();
                     return;
                 }
             }
+            if (this.shouldAbortImport()) {
+                this.finishWorkerEarly();
+                return;
+            }
             this.service.blockTillEmpty();
-            while (this.chunksProcessed.get() != this.totalChunks.get() && this.isRunning) {
+            while (this.chunksProcessed.get() != this.totalChunks.get() && !this.shouldAbortImport()) {
                 Thread.yield();
                 try {
                     Thread.sleep(10);
                 } catch (InterruptedException e) {
                     throw new RuntimeException(e);
                 }
+            }
+            if (this.shouldAbortImport()) {
+                this.finishWorkerEarly();
+                return;
             }
             if (!this.isShutdown.getAndSet(true)) {
                 this.worker = null;
@@ -283,6 +325,14 @@ public class WorldImporter implements IDataImporter {
             this.completionCallback.onCompletion(this.totalChunks.get());
         });
         this.worker.setName("World importer");
+    }
+
+    private void finishWorkerEarly() {
+        if (this.service.isLive()) {
+            this.service.blockTillEmpty();
+        }
+        this.completionCallback.onCompletion(this.totalChunks.get());
+        this.worker = null;
     }
 
     public boolean isBusy() {
@@ -295,11 +345,13 @@ public class WorldImporter implements IDataImporter {
 
     private void importRegionFile(File file) throws IOException {
         var name = file.getName();
-        var sections = name.split("\\.");
-        if (sections.length != 4 || (!sections[0].equals("r")) || (!sections[3].equals("mca"))) {
-            Logger.error("Unknown file: " + name);
+        if (!isValidRegionFileName(name)) {
+            if (shouldLogUnknownRegionFile(name)) {
+                Logger.warn("Skipping non-region file: " + name);
+            }
             throw new IllegalStateException();
         }
+        var sections = name.split("\\.");
         int rx = 0;
         int rz = 0;
         try {
@@ -334,6 +386,9 @@ public class WorldImporter implements IDataImporter {
             return;
         }
         for (int idx = 0; idx < 1024; idx++) {
+            if (this.shouldAbortImport()) {
+                break;
+            }
             int sectorMeta = Integer.reverseBytes(MemoryUtil.memGetInt(baseAddress + idx * 4L));//Assumes little endian
             if (sectorMeta == 0) {
                 //Empty chunk
@@ -375,8 +430,10 @@ public class WorldImporter implements IDataImporter {
                         Logger.error("Declared size of chunk is negative");
                     } else {
                         var data = new MemoryBuffer(n).cpyFrom(base + 5);
-                        this.jobQueue.add(()-> {
-                            if (!this.isRunning) {
+                        Runnable importTask = () -> {
+                            if (this.shouldAbortImport()) {
+                                this.totalChunks.decrementAndGet();
+                                this.estimatedTotalChunks.decrementAndGet();
                                 data.free();
                                 return;
                             }
@@ -394,10 +451,15 @@ public class WorldImporter implements IDataImporter {
                             } finally {
                                 data.free();
                             }
-                        });
+                        };
+                        this.jobQueue.add(importTask);
                         this.totalChunks.incrementAndGet();
                         this.estimatedTotalChunks.incrementAndGet();
-                        this.service.execute();
+                        if (!this.service.tryExecute() && this.jobQueue.remove(importTask)) {
+                            this.totalChunks.decrementAndGet();
+                            this.estimatedTotalChunks.decrementAndGet();
+                            data.free();
+                        }
                     }
                 }
             }
@@ -440,27 +502,35 @@ public class WorldImporter implements IDataImporter {
     }
 
     private void importChunkNBT(CompoundTag chunk, int regionX, int regionZ) {
-        if (!chunk.contains("Status")) {
-            //Its not real so decrement the chunk
+        if (this.shouldAbortImport()) {
+            this.totalChunks.decrementAndGet();
+            this.estimatedTotalChunks.decrementAndGet();
+            return;
+        }
+        CompoundTag chunkData = this.resolveChunkData(chunk);
+        ListTag sections = this.getSectionList(chunkData);
+        if (sections == null || sections.isEmpty()) {
             this.totalChunks.decrementAndGet();
             return;
         }
 
-        //Dont process non full chunk sections
-        var status = ChunkStatus.byName(chunk.getString("Status"));
-        if (status == null || (status != ChunkStatus.FULL && status != ChunkStatus.EMPTY)) {//We also import empty since they are from data upgrade
-            this.totalChunks.decrementAndGet();
-            return;
+        // Keep the previous status gate for known statuses, but allow older/unknown layouts through.
+        if (chunkData.contains("Status", Tag.TAG_STRING)) {
+            var status = ChunkStatus.byName(chunkData.getString("Status"));
+            if (status != null && status != ChunkStatus.FULL && status != ChunkStatus.EMPTY) {
+                this.totalChunks.decrementAndGet();
+                return;
+            }
         }
 
         try {
-            int x = chunk.getInt("xPos");
-            int z = chunk.getInt("zPos");
+            int x = chunkData.getInt("xPos");
+            int z = chunkData.getInt("zPos");
             if (x>>5 != regionX || z>>5 != regionZ) {
                 Logger.error("Chunk position is not located in correct region, expected: (" + regionX + ", " + regionZ+"), got: " + "(" + (x>>5) + ", " + (z>>5)+"), importing anyway");
             }
 
-            for (var sectionE : chunk.getList("sections", Tag.TAG_COMPOUND)) {
+            for (var sectionE : sections) {
                 var section = (CompoundTag) sectionE;
                 int y = section.getInt("Y");
                 this.importSectionNBT(x, y, z, section);
@@ -472,40 +542,189 @@ public class WorldImporter implements IDataImporter {
         this.updateCallback.onUpdate(this.chunksProcessed.incrementAndGet(), this.estimatedTotalChunks.get());
     }
 
-    private static final byte[] EMPTY = new byte[0];
+    private CompoundTag resolveChunkData(CompoundTag chunk) {
+        if (chunk.contains("Level", Tag.TAG_COMPOUND)) {
+            return chunk.getCompound("Level");
+        }
+        return chunk;
+    }
+
+    private ListTag getSectionList(CompoundTag chunkData) {
+        if (chunkData.contains("sections", Tag.TAG_LIST)) {
+            return chunkData.getList("sections", Tag.TAG_COMPOUND);
+        }
+        if (chunkData.contains("Sections", Tag.TAG_LIST)) {
+            return chunkData.getList("Sections", Tag.TAG_COMPOUND);
+        }
+        return null;
+    }
+
     private static final ThreadLocal<VoxelizedSection> SECTION_CACHE = ThreadLocal.withInitial(VoxelizedSection::createEmpty);
     private void importSectionNBT(int x, int y, int z, CompoundTag section) {
-        if (section.getCompound("block_states").isEmpty()) {
+        PalettedContainer<BlockState> blockStates;
+        PalettedContainerRO<Holder<Biome>> biomes = this.defaultBiomeProvider;
+
+        CompoundTag blockStatesTag = section.getCompound("block_states");
+        if (!blockStatesTag.isEmpty()) {
+            blockStates = this.decodeBlockStatesWithCompactFallback(blockStatesTag, x, y, z, false);
+            if (blockStates == null) {
+                //TODO: if its only partial, it means should try to upgrade the nbt format with datafixerupper probably
+                return;
+            }
+
+            var optBiomes = section.getCompound("biomes");
+            if (!optBiomes.isEmpty()) {
+                biomes = this.biomeCodec.parse(NbtOps.INSTANCE, optBiomes).result().orElse(this.defaultBiomeProvider);
+            }
+        } else if (section.contains("Palette", Tag.TAG_LIST)) {
+            ListTag legacyPalette = section.getList("Palette", Tag.TAG_COMPOUND);
+            if (legacyPalette.isEmpty()) {
+                return;
+            }
+
+            CompoundTag legacyStates = new CompoundTag();
+            legacyStates.put("palette", legacyPalette.copy());
+            if (section.contains("BlockStates", Tag.TAG_LONG_ARRAY)) {
+                long[] data = section.getLongArray("BlockStates");
+                if (data.length != 0) {
+                    legacyStates.putLongArray("data", data);
+                }
+            }
+
+            blockStates = this.decodeBlockStatesWithCompactFallback(legacyStates, x, y, z, true);
+            if (blockStates == null) {
+                return;
+            }
+        } else {
             return;
         }
-
         byte[] blockLightData = section.getByteArray("BlockLight");
         byte[] skyLightData = section.getByteArray("SkyLight");
 
         byte[] bl = blockLightData.length == 2048 ? blockLightData : null;
         byte[] sl = skyLightData.length == 2048 ? skyLightData : null;
 
-        var blockStatesRes = blockStateCodec.parse(NbtOps.INSTANCE, section.getCompound("block_states"));
-        var blockStates = blockStatesRes.resultOrPartial(Logger::error).orElse(null);
-        if (blockStates == null) {
-            //TODO: if its only partial, it means should try to upgrade the nbt format with datafixerupper probably
-            return;
-        }
-        var biomes = this.defaultBiomeProvider;
-        var optBiomes = section.getCompound("biomes");
-        if (!optBiomes.isEmpty()) {
-            biomes = this.biomeCodec.parse(NbtOps.INSTANCE, optBiomes).result().orElse(this.defaultBiomeProvider);
-        }
+        ILightingSupplier lightSupplier = new ArrayLightingSupplier(bl, sl);
         VoxelizedSection csec = WorldConversionFactory.convert(
                 SECTION_CACHE.get().setPosition(x, y, z),
                 this.world.getMapper(),
                 blockStates,
                 biomes,
-                bl,
-                sl
+                lightSupplier
         );
 
         WorldConversionFactory.mipSection(csec, this.world.getMapper());
         WorldUpdater.insertUpdate(this.world, csec);
+    }
+
+    private PalettedContainer<BlockState> decodeBlockStatesWithCompactFallback(CompoundTag blockStatesTag, int x, int y, int z, boolean legacyPath) {
+        if (!blockStatesTag.contains("data", Tag.TAG_LONG_ARRAY)) {
+            return this.blockStateCodec.parse(NbtOps.INSTANCE, blockStatesTag).resultOrPartial(Logger::error).orElse(null);
+        }
+
+        long[] raw = blockStatesTag.getLongArray("data");
+        if (isKnownCompactStorageLength(raw.length)) {
+            PalettedContainer<BlockState> recovered = this.tryDecodeWithRepackedStorage(blockStatesTag, raw, x, y, z, legacyPath);
+            if (recovered != null) {
+                return recovered;
+            }
+            return this.blockStateCodec.parse(NbtOps.INSTANCE, blockStatesTag).resultOrPartial(Logger::error).orElse(null);
+        }
+
+        var decodeResult = this.blockStateCodec.parse(NbtOps.INSTANCE, blockStatesTag);
+        var direct = decodeResult.result().orElse(null);
+        if (direct != null) {
+            return direct;
+        }
+
+        PalettedContainer<BlockState> recovered = this.tryDecodeWithRepackedStorage(blockStatesTag, raw, x, y, z, legacyPath);
+        if (recovered != null) {
+            return recovered;
+        }
+
+        return decodeResult.resultOrPartial(Logger::error).orElse(null);
+    }
+
+    private PalettedContainer<BlockState> tryDecodeWithRepackedStorage(CompoundTag blockStatesTag, long[] raw, int x, int y, int z, boolean legacyPath) {
+        long[] repacked = tryRepackCompactStorage(raw);
+        if (repacked == null) {
+            return null;
+        }
+
+        CompoundTag repackedTag = blockStatesTag.copy();
+        repackedTag.putLongArray("data", repacked);
+        var recovered = this.blockStateCodec.parse(NbtOps.INSTANCE, repackedTag).result().orElse(null);
+        if (recovered != null) {
+            this.logRecoveredCompactStorage(raw.length, repacked.length, x, y, z, legacyPath);
+        }
+        return recovered;
+    }
+
+    private void logRecoveredCompactStorage(int fromLength, int toLength, int x, int y, int z, boolean legacyPath) {
+        int recoveredCount = this.recoveredCompactStorageCount.incrementAndGet();
+        if (recoveredCount <= RECOVERY_DETAIL_LOG_LIMIT) {
+            Logger.warn("Recovered " + (legacyPath ? "legacy " : "") + "PalettedContainer storage at section (" + x + ", " + y + ", " + z + ") by repacking BlockStates from " + fromLength + " to " + toLength + " longs");
+            return;
+        }
+        if (((recoveredCount - RECOVERY_DETAIL_LOG_LIMIT) % RECOVERY_SUMMARY_LOG_INTERVAL) == 0) {
+            Logger.warn("Recovered " + (legacyPath ? "legacy " : "") + "PalettedContainer storage " + recoveredCount + " times so far; latest section (" + x + ", " + y + ", " + z + "), latest repack " + fromLength + "->" + toLength + " longs");
+        }
+    }
+
+    private static boolean isKnownCompactStorageLength(int length) {
+        return length == COMPACT_BLOCK_STATES_LENGTH_5BIT || length == COMPACT_BLOCK_STATES_LENGTH_6BIT;
+    }
+
+    private static long[] tryRepackCompactStorage(long[] compactData) {
+        if (compactData.length == 0 || (compactData.length % 64) != 0) {
+            return null;
+        }
+
+        int bits = compactData.length / 64;
+        if (bits <= 0 || bits >= 32) {
+            return null;
+        }
+
+        int valuesPerLong = 64 / bits;
+        if (valuesPerLong <= 0) {
+            return null;
+        }
+
+        int paddedLength = (SECTION_STATE_ENTRY_COUNT + valuesPerLong - 1) / valuesPerLong;
+        if (paddedLength == compactData.length) {
+            return null;
+        }
+
+        long mask = (1L << bits) - 1L;
+        long[] paddedData = new long[paddedLength];
+
+        for (int index = 0; index < SECTION_STATE_ENTRY_COUNT; index++) {
+            int bitIndex = index * bits;
+            int srcLongIndex = bitIndex >>> 6;
+            int srcBitOffset = bitIndex & 63;
+
+            long value = compactData[srcLongIndex] >>> srcBitOffset;
+            if ((srcBitOffset + bits) > 64) {
+                if (srcLongIndex + 1 >= compactData.length) {
+                    return null;
+                }
+                value |= compactData[srcLongIndex + 1] << (64 - srcBitOffset);
+            }
+            value &= mask;
+
+            int dstLongIndex = index / valuesPerLong;
+            int dstBitOffset = (index % valuesPerLong) * bits;
+            paddedData[dstLongIndex] |= value << dstBitOffset;
+        }
+
+        return paddedData;
+    }
+
+    private static boolean isValidRegionFileName(String name) {
+        return REGION_FILE_NAME_PATTERN.matcher(name).matches();
+    }
+
+    private static boolean shouldLogUnknownRegionFile(String name) {
+        return !name.endsWith(".backup");
     }
 }

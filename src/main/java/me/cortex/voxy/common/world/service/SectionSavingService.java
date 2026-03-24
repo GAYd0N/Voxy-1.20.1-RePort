@@ -23,7 +23,14 @@ public class SectionSavingService {
     }
 
     private void processJob() {
-        var task = this.saveQueue.pop();
+        var task = this.saveQueue.poll();
+        if (task == null) {
+            return;
+        }
+        this.processEntry(task);
+    }
+
+    private void processEntry(SaveEntry task) {
         var section = task.section;
         section.assertNotFree();
         try {
@@ -48,10 +55,20 @@ public class SectionSavingService {
     }*/
 
     public void enqueueSave(WorldEngine in, WorldSection section, boolean nonBlocking) {
+        if (!this.service.isLive()) {
+            return;
+        }
+
         //If its not enqueued for saving then enqueue it
         if (section.exchangeIsInSaveQueue(true)) {
             //Acquire the section for use
             section.acquire();
+
+            if (!this.service.isLive()) {
+                section.exchangeIsInSaveQueue(false);
+                section.release();
+                return;
+            }
 
             //Hard limit the save count to prevent OOM
             if ((!nonBlocking) && this.getTaskCount() > SOFT_MAX_QUEUE_SIZE) {
@@ -72,8 +89,19 @@ public class SectionSavingService {
                 }
             }
 
-            this.saveQueue.add(new SaveEntry(in, section));
-            this.service.execute();
+            if (!this.service.isLive()) {
+                section.exchangeIsInSaveQueue(false);
+                section.release();
+                return;
+            }
+
+            SaveEntry task = new SaveEntry(in, section);
+            this.saveQueue.add(task);
+            if (!this.service.tryExecute()) {
+                if (this.saveQueue.remove(task)) {
+                    this.processEntry(task);
+                }
+            }
         }
     }
 

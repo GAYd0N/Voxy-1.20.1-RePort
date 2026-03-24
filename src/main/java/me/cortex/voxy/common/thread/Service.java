@@ -4,6 +4,7 @@ import me.cortex.voxy.common.Logger;
 import me.cortex.voxy.common.util.Pair;
 
 import java.util.concurrent.Semaphore;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.BooleanSupplier;
 import java.util.function.Supplier;
 
@@ -17,6 +18,7 @@ public class Service {
     private final Semaphore tasks = new Semaphore(0);
     private volatile boolean isLive = true;
     private volatile boolean isStopping = false;
+    private final AtomicBoolean deadExecuteWarningIssued = new AtomicBoolean(false);
 
     Service(Supplier<Pair<Runnable, Runnable>> ctxSupplier, ServiceManager sm, long weight, String name, BooleanSupplier limiter) {
         this.sm = sm;
@@ -28,12 +30,19 @@ public class Service {
     }
 
     public void execute() {
-        if (this.isStopping) {
-            Logger.error("Tried executing on a dead service");
-            return;
+        this.tryExecute();
+    }
+
+    public boolean tryExecute() {
+        if (this.isStopping || !this.isLive) {
+            if (this.deadExecuteWarningIssued.compareAndSet(false, true)) {
+                Logger.warn("Ignored execute request on stopping/dead service: " + this.name);
+            }
+            return false;
         }
         this.tasks.release();
         this.sm.execute(this);
+        return true;
     }
 
     boolean runJob() {

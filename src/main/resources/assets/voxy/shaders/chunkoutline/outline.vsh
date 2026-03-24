@@ -17,7 +17,9 @@ ivec3 unpackPos(ivec2 pos) {
 
 bool shouldRender(ivec3 icorner) {
     vec3 corner = vec3(mix(mix(ivec3(0), icorner-1, greaterThan(icorner-1, ivec3(0))), icorner+17, lessThan(icorner+17, ivec3(0))))-negInnerSec.xyz;
-    return (corner.x*corner.x + corner.z*corner.z < negInnerSec.w*negInnerSec.w) && abs(corner.y) < negInnerSec.w;
+    // Restrict only by horizontal range. Vertical clipping here causes
+    // "look up loses top half / look down loses bottom half" artifacts.
+    return (corner.x*corner.x + corner.z*corner.z < negInnerSec.w*negInnerSec.w);
 }
 
 #ifdef TAA
@@ -36,8 +38,8 @@ void main() {
     }
 
     ivec3 cubeCornerI = ivec3(gl_VertexID&1, (gl_VertexID>>2)&1, (gl_VertexID>>1)&1)*16;
-    int baseY = origin.y + section.y;
-    cubeCornerI.y = ((gl_VertexID>>2)&1) == 0 ? (worldHeight.x - baseY) : (worldHeight.y - baseY);
+    // Keep depth-bound boxes per-section (16-high). Full-height columns can
+    // over-occlude vertical stacks and make tall buildings look incomplete.
     gl_Position = MVP * vec4(vec3(cubeCornerI+origin), 1);
     gl_Position.z -= 0.0005f;
 

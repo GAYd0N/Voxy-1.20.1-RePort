@@ -19,6 +19,9 @@ import java.util.stream.Collectors;
 
 //TODO: add thread access verification (I.E. only accessible on a single thread)
 public abstract class VoxyInstance {
+    private static final long WORLD_SHUTDOWN_WAIT_TIMEOUT_MS = 5_000;
+    private static final long WORLD_SHUTDOWN_POLL_MS = 10;
+
     private volatile boolean isRunning = true;
     private final Thread worldCleaner;
     public final BooleanSupplier savingServiceRateLimiter;//Can run if this returns true
@@ -233,40 +236,49 @@ public abstract class VoxyInstance {
 
         try {this.ingestService.shutdown();} catch (Exception e) {Logger.error(e);}
         try {this.savingService.shutdown();} catch (Exception e) {Logger.error(e);}
+        try {this.threadPool.shutdown();} catch (Exception e) {Logger.error(e);}
 
 
         long stamp = this.activeWorldLock.writeLock();
-
-        if (!this.activeWorlds.isEmpty()) {
-            boolean printedNotice = false;
-            for (var world : this.activeWorlds.values()) {
-                if (world.isWorldUsed()) {
-                    if (!printedNotice) {
-                        printedNotice = true;
-                        Logger.error("Not all worlds shutdown, force closing worlds");
-                    }
-                    while (world.isWorldUsed()) {
-                        try {
-                            //noinspection BusyWait
-                            Thread.sleep(10);
-                        } catch (InterruptedException e) {
-                            throw new RuntimeException(e);
+        try {
+            if (!this.activeWorlds.isEmpty()) {
+                boolean printedNotice = false;
+                for (var world : this.activeWorlds.values()) {
+                    if (world.isWorldUsed()) {
+                        if (!printedNotice) {
+                            printedNotice = true;
+                            Logger.error("Not all worlds shutdown, force closing worlds");
+                        }
+                        long deadline = System.currentTimeMillis() + WORLD_SHUTDOWN_WAIT_TIMEOUT_MS;
+                        while (world.isWorldUsed() && System.currentTimeMillis() < deadline) {
+                            try {
+                                //noinspection BusyWait
+                                Thread.sleep(WORLD_SHUTDOWN_POLL_MS);
+                            } catch (InterruptedException e) {
+                                throw new RuntimeException(e);
+                            }
+                        }
+                        if (world.isWorldUsed()) {
+                            Logger.error("Timed out waiting for world to become idle during shutdown, forcing close: " + System.identityHashCode(world));
                         }
                     }
+                    //Free the world
+                    try {
+                        world.free();
+                    } catch (Exception e) {
+                        Logger.error("Failed to free world during instance shutdown", e);
+                    }
                 }
-                //Free the world
-                world.free();
+                this.activeWorlds.clear();
             }
-            this.activeWorlds.clear();
-        }
 
-        try {this.threadPool.shutdown();} catch (Exception e) {Logger.error(e);}
-
-        if (!this.activeWorlds.isEmpty()) {
-            throw new IllegalStateException("Not all worlds shutdown");
+            if (!this.activeWorlds.isEmpty()) {
+                throw new IllegalStateException("Not all worlds shutdown");
+            }
+            Logger.info("Instance shutdown");
+        } finally {
+            this.activeWorldLock.unlockWrite(stamp);
         }
-        Logger.info("Instance shutdown");
-        this.activeWorldLock.unlockWrite(stamp);
     }
 
     public boolean isIngestEnabled(WorldIdentifier worldId) {
